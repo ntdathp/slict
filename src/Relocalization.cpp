@@ -435,21 +435,32 @@ public:
           "[Relocalization] Prior map is not ready, skipping ULOCCallback.");
       return;
     }
+
     mytf pose(*msg);
 
-    if (loamInstances.size() == 0) {
-      printf("LITELOAM init.. \n");
-      CreateLiteLoamVec(pose);
+    // If the number of LITELOAM instances is less than 10, create one more
+    if (loamInstances.size() < 10) {
+      int newID =
+          loamInstances.size(); // Assign a new ID based on the current size
+      auto newLoam =
+          std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose, newID, nh_ptr);
+      loamInstances.push_back(newLoam);
+      ROS_INFO("[Relocalization] Created new LITELOAM instance with ID %d. "
+               "Total instances: %lu",
+               newID, loamInstances.size());
     }
 
+    // Iterate through existing instances to check their status
     for (size_t i = 0; i < loamInstances.size(); ++i) {
       auto &loam = loamInstances[i];
 
+      // Restart the instance if it has exceeded 10 seconds and is not working
       if (loam->hasExceededTenSec() && !loam->getIsWorking()) {
         ROS_WARN("[Relocalization] LITELOAM %d exceeded 10 sec and is not "
                  "working. Restarting...",
                  loam->getID());
 
+        // Replace the instance with a new one using the same ID
         loamInstances[i] = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose,
                                                       loam->getID(), nh_ptr);
 
@@ -458,7 +469,6 @@ public:
       }
     }
   }
-
 };
 
 int main(int argc, char **argv) {

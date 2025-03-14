@@ -1,0 +1,167 @@
+<launch>
+
+      <arg name="publish_clock" default="--clock"/>
+      <arg name="autorun"       default="1"/>
+      <arg name="loop_en"       default="0"/>
+      <arg name="show_report"   default="1"/>
+
+      <!-- Enable prior map -->
+      <arg name="use_prior_map" default="1"/>
+      <param name="/priormap_kfprefix" value="KfCloudinW" />
+
+      <!-- Directory to log the bundle adjustment poses, pointclouds, and others-->
+      <arg name="exp_log_dir" default="/home/$(env USER)/slict_logs/mcdviral"/>
+
+      <!-- MCDVIRAL dataset, downloadable at mcdviral.github.io. -->
+      <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/>
+      <!-- <arg name="data_path"       default="/media/tmn/mySataSSD11/DATASETS/MCDVIRAL/PublishedSequencesUnzipped"/> -->
+
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_06/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_09/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_10/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_night_01/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_night_04/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_night_05/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_day_02/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_day_03/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_day_04/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_night_07/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_night_08/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/tuhh_night_09/*.bag"/> -->
+
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_03/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_04/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_05/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_06/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_07/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_08/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_day_09/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_01/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_02/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_03/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_05/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_06/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_07/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_09/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_10/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_11/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/UnpublishedSequences/ntu_night_12/*.bag"/> -->
+
+      <!-- Manual initialization for reloc -->
+      <group if="$(eval 'ntu_day_01' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 0.0,     0.0,     0.0,    0,     0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_02' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 1.61,    17.60,   0.36,  -92,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_03' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 2.29,    18.08,   0.41,   80,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_04' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 2.59,    6.64,    0.31,   1,     0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_05' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 1.82,    13.04,   0.32,   83,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_06' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [-1.56,    0.94,    0.12,   14,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_07' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 15.01,  -132.45,  1.54,   34,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_08' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 54.15,  -74.52,  -0.45,   89,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_09' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 49.79,  -22.19,   0.61,   121,   0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_day_10' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 48.21,  -68.97,  -0.65,   77,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_01' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 7.24,    7.69,    0.47,   5,     0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_02' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 5.63,    6.10,    0.33,   3.6,   0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_03' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 117.57,  8.95,    3.17,  -95,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_04' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 283.09,  -27.83,  6.25,   8.65, -2, -1] </rosparam> </group>
+      <group if="$(eval 'ntu_night_05' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 49.30,  -1.27,    0.82,  -91,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_06' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 54.74,  -66.52,  -0.47,  -94,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_07' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 1.64,    8.36,    0.33,   5,     0,  0] </rosparam> </group>
+      <!-- <group if="$(eval 'ntu_night_08' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 186.8,   9.48,    3.61,   176,   0,  0] </rosparam> </group> -->
+      <group if="$(eval 'ntu_night_09' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 237.44,  9.77,    5.12,  -66,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_10' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 322.44, -148.63, -0.88,  -142,   0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_11' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 175.00, -252.22, -5.32,   165,   0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_12' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 109.12, -107.19, -3.77,  -98,    0,  0] </rosparam> </group>
+      <group if="$(eval 'ntu_night_13' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 107.19,  -73.28, -2.93,   83,    0,  0] </rosparam> </group>
+
+      <!-- <group if="$(eval 'kth_day_06' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 64.41,   66.48,   38.50,  144, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'kth_day_09' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 70.40,   63.12,   38.30, -26,  0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'kth_day_10' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 69.13,   63.57,   38.38,  145, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'kth_night_01' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 68.84,  -64.10,   38.43,  138, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'kth_night_04' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 71.47,   63.56,   38.37, -52,  0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'kth_night_05' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 43.81, - 131.66,  29.42,  76,  0, 0] </rosparam> </group> -->
+
+      <!-- <group if="$(eval 'tuhh_day_02' in bag_file)">   <rosparam param="/tf_Lprior_L0_init"> [ 45.73,   447.10,  14.69, -157, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'tuhh_day_03' in bag_file)">   <rosparam param="/tf_Lprior_L0_init"> [ 43.62,   446.53,  14.59, -162, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'tuhh_day_04' in bag_file)">   <rosparam param="/tf_Lprior_L0_init"> [ 35.15,   114.94, -1.3,   -130, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'tuhh_night_07' in bag_file)"> <rosparam param="/tf_Lprior_L0_init"> [ 43.87,   447.10,  14.59, -138, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'tuhh_night_08' in bag_file)"> <rosparam param="/tf_Lprior_L0_init"> [ 42.93,   446.72,  14.63, -143, 0, 0] </rosparam> </group> -->
+      <!-- <group if="$(eval 'tuhh_night_09' in bag_file)"> <rosparam param="/tf_Lprior_L0_init"> [ 32.47,   111.61, -1.42,  -149, 0, 0] </rosparam> </group> -->
+
+      <!-- Chose the config file based on the sequence names -->
+      <arg name="config_file" value="$(find slict)/config/mcdviral_atv.yaml" if="$(eval 'ntu_'  in bag_file)" />
+      <!-- <arg name="config_file" value="$(find slict)/config/mcdviral_hhs.yaml" if="$(eval 'kth_'  in bag_file)" /> -->
+      <!-- <arg name="config_file" value="$(find slict)/config/mcdviral_hhs.yaml" if="$(eval 'tuhh_' in bag_file)" /> -->
+
+      <!-- Priormap file -->
+      <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapSLAM/NTU/ntu_day_01_exp"  if="$(eval 'ntu_'  in bag_file)" />
+      <!-- <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/KTH"  if="$(eval 'kth_'  in bag_file)" /> -->
+      <!-- <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/TUHH" if="$(eval 'tuhh_' in bag_file)" /> -->
+
+      <!-- STD descriptor for relocalization -->
+      <arg name="descriptor_path" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapSLAM/NTU/ntu_day_01_exp/saved_descriptors/"  if="$(eval 'ntu_'  in bag_file)" />
+      <!-- <arg name="descriptor_path" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/Reloc/kth_day_06/saved_descriptors/"  if="$(eval 'kth_'  in bag_file)" /> -->
+      <!-- <arg name="descriptor_path" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/Reloc/tuhh_day_03/saved_descriptors/" if="$(eval 'tuhh_' in bag_file)" /> -->
+      
+      <!-- Load the param -->
+      <rosparam file="$(arg config_file)" command="load"/>
+      <!-- Set some exp related params -->
+      <param name="/autoexit" type="int"    value="$(arg autorun)" />
+      <param name="/loop_en"  type="int"    value="$(arg loop_en)" />
+      <param name="/log_dir"  type="string" value="$(arg exp_log_dir)" />
+
+      <!-- Run the livox to ouster converter -->
+      <node pkg="slict" required="true" type="slict_livox_to_ouster" name="slict_livox_to_ouster" respawn="false" output="screen">
+            <!-- <remap from="/livox/lidar"  to="/livox/lidar_hybrid"/> -->
+      </node>
+
+      <!-- Run the sensor sync -->
+      <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/>
+
+      <!-- Run the relocalization -->
+      <!-- <node if="$(eval use_prior_map > 0 and descriptor_path != '')" pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
+            <param name="relocalization/descriptor_file_path" type="string" value="$(arg descriptor_path)"/>
+      </node> -->
+      <!-- Launch the ModelUWB node -->
+      <node name="ModelUWB" pkg="uwbreloc" type="ModelUWB.py" output="screen" required="false" respawn="true">
+            <param name="use_sim_time" value="false"/>
+      </node>
+      <!-- Launch the SyncUWB node -->
+      <node name="SyncUWB" pkg="uwbreloc" type="SyncUWB" required="false" respawn="true">
+            <param name="use_sim_time" value="false"/>
+      </node>
+
+      <!-- Run the Estimator -->
+      <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
+      <param name="/use_prior_map"  type="int"    value="$(arg use_prior_map)" />
+      <param name="/show_report"    type="int"    value="$(arg show_report)"   />
+      <param name="/slam_ref_frame" type="string" value="odom"/>
+      <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
+      <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"
+            launch-prefix="gdb -ex run - -args"/> -->
+
+      <!-- Run the imu predictor -->
+      <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="screen"/>
+
+      <!--- Run Rviz-->
+      <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
+            args="-d $(find slict)/launch/mcdviral.rviz" />
+
+      <!-- An offset time -->
+      <arg name="start_time" value="0" if="$(eval 'ntu_day_10' in bag_file)"/>
+      <arg name="start_time" value="0" if="$(eval 'ntu_day_10' not in bag_file)"/>
+
+      <!-- Play the bag file -->
+      <param name="/use_sim_time" value="false" />
+      <arg name="wait_time" value="$(eval use_prior_map*10 + 1)" />
+      <node required="false" pkg="rosbag" type="play" name="rosbag_player"
+            args="$(arg publish_clock) $(arg bag_file) -r 1.0 -s $(arg start_time)"
+            launch-prefix="bash -c 'sleep $(arg wait_time); $0 $@' "/>
+
+      <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
+
+</launch>

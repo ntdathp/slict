@@ -96,11 +96,11 @@ public:
     {
 
         // sub to imu , optimization
-        lidarCloudSub = nh_ptr->subscribe("/lastcloud_inB", 100, &LITELOAM::PCHandler, this);
+        lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this); // Change lastcloud_inB to lastcloud
         relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
 
         std::cout << "[LITELOAM] " << liteloam_id
-                  << " Subscribed to /os_cloud_node/points and publishing to /reloc_pose"
+                  << " Subscribed to /lastcloud and publishing to /liteloam_pose"
                   << std::endl;
 
         startTime = ros::Time::now().toSec();

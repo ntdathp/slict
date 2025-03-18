@@ -39,443 +39,449 @@ using ufoNode = ufo::map::NodeBV;
 using ufoSphere = ufo::geometry::Sphere;
 using ufoPoint3 = ufo::map::Point3;
 
-class LITELOAM {
+class LITELOAM
+{
 
 private:
-  ros::NodeHandlePtr nh_ptr;
+    ros::NodeHandlePtr nh_ptr;
 
-  // Subscriber
-  ros::Subscriber lidarCloudSub;
+    // Subscriber
+    ros::Subscriber lidarCloudSub;
 
-  // Publisher
-  ros::Publisher relocPub;
+    // Publisher
+    ros::Publisher relocPub;
 
-  // Queue + mutex
-  std::deque<CloudXYZITPtr> cloud_queue;
-  std::mutex buffer_mutex;
+    // Queue + mutex
+    std::deque<CloudXYZIPtr> cloud_queue;
+    std::mutex buffer_mutex;
 
-  // Prior map + kd-tree
-  CloudXYZIPtr priorMap;
-  KdFLANNPtr kdTreeMap;
+    // Clouds on the sliding window
+    deque<CloudXYZIPtr> SwCloud;
 
-  // Thread for processing
-  std::thread processThread;
-  std::atomic<bool> running;
+    // Prior map + kd-tree
+    CloudXYZIPtr priorMap;
+    KdFLANNPtr kdTreeMap;
 
-  // Initial timestamp
-  double initialTime;
+    // Thread for processing
+    std::thread processThread;
+    bool running = true;
 
-  // Initial pose (only a single variable)
-  mytf initPose;
+    // Initial timestamp
+    double startTime;
 
-  int liteloam_id;
-
-  std::chrono::steady_clock::time_point startTime;
-  double runTimeSec;
-  bool exceedTenSec;
-  bool isWorking;
-
-  SE3d currentPose;
-  double currPosets = -1.0;
-
-  // LOAM
-
-  // Index for distinguishing between clouds
-  int LIDX;
-
-  // Feature to map association parameters
-  double min_planarity = 0.2;
-  double max_plane_dis = 0.3;
-
-  // Initial pose of the lidars
-  SE3d T_W_Li0;
-
-  // Gaussian Process for the trajectory of each lidar
-  GaussianProcessPtr traj;
-
-  // Knot length
-  double deltaT = 0.1;
-  double mpSigGa = 10;
-  double mpSigNu = 10;
-
-  // Associate params
-  int knnSize = 6;
-  double minKnnSqDis = 0.5 * 0.5;
-
-  // Buffer for the pointcloud segments
-  mutex cloud_seg_buf_mtx;
-  deque<CloudXYZITPtr> cloud_seg_buf;
+    // Initial pose (only a single variable)
+    mytf initPose;
+    
+    // The id of the loam instance
+    int liteloam_id;
 
 public:
-  LITELOAM(const CloudXYZIPtr &priorMap, const KdFLANNPtr &kdTreeMap,
-           const mytf &initPose, int id, const ros::NodeHandlePtr &nh_ptr)
-      : priorMap(priorMap), kdTreeMap(kdTreeMap), initPose(initPose),
-        liteloam_id(id), nh_ptr(nh_ptr),
-        startTime(std::chrono::steady_clock::now()), runTimeSec(0.0),
-        exceedTenSec(false), isWorking(false) {
 
-    // sub to imu , optimization
-    lidarCloudSub = nh_ptr->subscribe("/os_cloud_node/points", 100,
-                                      &LITELOAM::PCHandler, this);
-    relocPub =
-        nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
+    ~LITELOAM()
+    {
+        // Dừng vòng lặp trong processBuffer()
+        running = false;
 
-    std::cout
-        << "[LITELOAM] " << liteloam_id
-        << " Subscribed to /os_cloud_node/points and publishing to /reloc_pose"
-        << std::endl;
+        // Đợi thread kết thúc
+        if (processThread.joinable())
+            processThread.join();
 
-    // Initialize the initial timestamp
-    initialTime = -1;
-    double t0 = 0.0;
-
-    // LOAM init
-    Matrix3d SigGa = Vector3d(mpSigGa, mpSigGa, mpSigGa).asDiagonal();
-    Matrix3d SigNu = Vector3d(mpSigNu, mpSigNu, mpSigNu).asDiagonal();
-
-    traj = GaussianProcessPtr(new GaussianProcess(deltaT, SigGa, SigNu, true));
-    traj->setStartTime(t0);
-    traj->setKnot(0, GPState(t0, initPose.getSE3()));
-
-    running = true;
-    processThread = std::thread(&LITELOAM::processBuffer, this);
-
-    ROS_INFO_STREAM("[LITELOAM " << liteloam_id
-                                 << "] Constructor - thread started");
-  }
-
-  ~LITELOAM() {
-    // Dừng vòng lặp trong processBuffer()
-    running = false;
-    // Đợi thread kết thúc
-    if (processThread.joinable()) {
-      processThread.join();
+        ROS_WARN("liteloam %d destructed." RESET, liteloam_id);
     }
-    ROS_INFO_STREAM("[LITELOAM " << liteloam_id
-                                 << "] Destructor - thread joined");
+
+    LITELOAM(const CloudXYZIPtr &priorMap, const KdFLANNPtr &kdTreeMap,
+             const mytf &initPose, int id, const ros::NodeHandlePtr &nh_ptr)
+        : priorMap(priorMap), kdTreeMap(kdTreeMap),
+          initPose(initPose), liteloam_id(id), nh_ptr(nh_ptr)
+    {
+
+        // sub to imu , optimization
+        lidarCloudSub = nh_ptr->subscribe("/lastcloud_inB", 100, &LITELOAM::PCHandler, this);
+        relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
+
+        std::cout << "[LITELOAM] " << liteloam_id
+                  << " Subscribed to /os_cloud_node/points and publishing to /reloc_pose"
+                  << std::endl;
+
+        startTime = ros::Time::now().toSec();
+
+        running = true;
+        processThread = std::thread(&LITELOAM::processBuffer, this);
+
+        ROS_INFO_STREAM("[LITELOAM " << liteloam_id << "] Constructor - thread started");
+    }
+
+    void stop() {running = false;}
+
+    void processBuffer()
+    {
+      while (running && ros::ok())
+      {
+          if (cloud_queue.empty())
+          {
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+              continue;
+          }
+  
+          // Start measuring processing time
+          ros::Time startProcessingTime = ros::Time::now();
+  
+          CloudXYZIPtr cloudToProcess;
+          {
+              std::lock_guard<std::mutex> lock(buffer_mutex);
+              cloudToProcess = cloud_queue.front();
+              cloud_queue.pop_front();
+          }
+          
+          uint64_t pcl_timestamp = cloudToProcess->header.stamp;
+          ros::Time cloudTimestamp = ros::Time(pcl_timestamp / 1e6, (pcl_timestamp % static_cast<uint64_t>(1e6)) * 1e3);
+  
+          if (liteloam_id == 0)
+              ROS_INFO("liteloam_id %d. Start time: %f. Running Time: %f.",
+                       liteloam_id, startTime, timeSinceStart());
+  
+          //------------------------------------------------
+          // 1) Pre-processing of input cloud
+          //------------------------------------------------
+          pcl::PointCloud<pcl::PointXYZI>::Ptr sourceCloud(new pcl::PointCloud<pcl::PointXYZI>());
+          pcl::copyPointCloud(*cloudToProcess, *sourceCloud);
+  
+          // Apply VoxelGrid filter to downsample the point cloud
+          pcl::VoxelGrid<pcl::PointXYZI> vg;
+          vg.setInputCloud(sourceCloud);
+          vg.setLeafSize(0.3f, 0.3f, 0.3f);  // Adjust accordingly
+          pcl::PointCloud<pcl::PointXYZI>::Ptr sourceFiltered(new pcl::PointCloud<pcl::PointXYZI>());
+          vg.filter(*sourceFiltered);
+  
+          //------------------------------------------------
+          // 2) Configure ICP
+          //------------------------------------------------
+          pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
+          icp.setInputSource(sourceFiltered);  // Source cloud (moving)
+          icp.setInputTarget(priorMap);        // Target cloud (static reference map)
+  
+          // Set ICP parameters
+          icp.setMaxCorrespondenceDistance(2.0);   // Max distance for point correspondence
+          icp.setMaximumIterations(50);           // Max iterations for convergence
+          icp.setTransformationEpsilon(1e-6);     // Stop if transformation difference < threshold
+          icp.setEuclideanFitnessEpsilon(1e-6);   // Stop if fitness error < threshold
+  
+          //------------------------------------------------
+          // 3) Execute ICP
+          //------------------------------------------------
+          pcl::PointCloud<pcl::PointXYZI>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZI>());
+          icp.align(*aligned);
+  
+          // Retrieve ICP fitness score
+          double icpFitnessThres = 0.3;   // Threshold for ICP result acceptance
+          double icpFitnessRes = icp.getFitnessScore();
+  
+          //------------------------------------------------
+          // 4) Evaluate ICP result
+          //------------------------------------------------
+          if (icp.hasConverged() && icpFitnessRes <= icpFitnessThres)
+          {
+              ROS_INFO_STREAM("ICP converged. Score: " << icpFitnessRes);
+  
+              // Get the final transformation matrix from ICP
+              Eigen::Matrix4f icpTransformation = icp.getFinalTransformation();
+              Eigen::Matrix3f R = icpTransformation.block<3,3>(0,0);
+              Eigen::Vector3f t = icpTransformation.block<3,1>(0,3);
+  
+              Eigen::Quaternionf q(R);
+              geometry_msgs::PoseStamped pose_msg;
+  
+              // Calculate processing duration
+              ros::Duration processingDuration = ros::Time::now() - startProcessingTime;
+  
+              // Set pose message timestamp as the cloud's original timestamp + processing duration
+              pose_msg.header.stamp = cloudTimestamp + processingDuration;
+              pose_msg.header.frame_id = "map";
+  
+              // Assign position
+              pose_msg.pose.position.x = t.x();
+              pose_msg.pose.position.y = t.y();
+              pose_msg.pose.position.z = t.z();
+  
+              // Assign orientation
+              pose_msg.pose.orientation.x = q.x();
+              pose_msg.pose.orientation.y = q.y();
+              pose_msg.pose.orientation.z = q.z();
+              pose_msg.pose.orientation.w = q.w();
+  
+              // Publish estimated pose
+              relocPub.publish(pose_msg);
+          }
+          else
+          {
+              ROS_WARN("ICP did not converge or Fitness Score (%f) > Threshold (%f)", icpFitnessRes, icpFitnessThres);
+          }
+  
+          //------------------------------------------------
+          // 5) Repeat loop
+          //------------------------------------------------
+      }
+  
+      if (liteloam_id == 0)
+          ROS_INFO(KRED "liteloam_id %d exits." RESET, liteloam_id);
   }
 
-  void processBuffer() {
-    while (running) {
-      CloudXYZITPtr cloudToProcess;
-      {
+    void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
+    {
         std::lock_guard<std::mutex> lock(buffer_mutex);
-        if (!cloud_queue.empty()) {
-          cloudToProcess = cloud_queue.front();
-          cloud_queue.pop_front();
-        }
-      }
-      // If the queue is empty, wait 10ms before checking again
-      if (!cloudToProcess) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        continue;
-      }
 
-      // Processing time
-      double processTime =
-          cloudToProcess->points.empty() ? 0.0 : cloudToProcess->points[0].t;
+        // Chuyển đổi dữ liệu từ ROS PointCloud2 sang PCL
+        CloudXYZIPtr newCloud(new CloudXYZI());
+        pcl::fromROSMsg(*msg, *newCloud);
 
-      while (GetTraj()->getMaxTime() < processTime) {
-        GetTraj()->extendOneKnot(
-            GetTraj()->getKnot(GetTraj()->getNumKnots() - 1));
-      }
-
-      CloudXYZIPtr deskewedCloud(new pcl::PointCloud<pcl::PointXYZI>);
-
-      deskewedCloud->reserve(cloudToProcess->size());
-
-      for (const auto &point : *cloudToProcess) {
-        pcl::PointXYZI new_point;
-        new_point.x = point.x;
-        new_point.y = point.y;
-        new_point.z = point.z;
-        new_point.intensity = point.intensity;
-        deskewedCloud->push_back(new_point);
-      }
-
-      CloudXYZIPtr cloudInW(new CloudXYZI);
-      {
-        double t_last = (!cloudToProcess->empty())
-                            ? cloudToProcess->points.back().t
-                            : processTime;
-        SE3d pose = GetTraj()->pose(t_last);
-        pcl::transformPointCloud(*deskewedCloud, *cloudInW, pose.translation(),
-                                 pose.so3().unit_quaternion());
-      }
-
-      std::vector<LidarCoef> Coef;
-
-      Associate(GetTraj(), kdTreeMap, priorMap, cloudToProcess, deskewedCloud,
-                cloudInW, Coef);
-      std::cout << "[LITELOAM]" << liteloam_id
-                << " Associated features: " << Coef.size() << std::endl;
-
-      publishPose(processTime);
-    }
-    ROS_INFO_STREAM("[LITELOAM " << liteloam_id << "] processBuffer stopped");
-  }
-
-  void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg) {
-    std::lock_guard<std::mutex> lock(buffer_mutex);
-    double msg_time = msg->header.stamp.toSec();
-    // Lưu timestamp đầu tiên nếu chưa có
-    if (initialTime < 0.0) {
-      initialTime = msg_time;
-    }
-    double rel_time = msg_time - initialTime;
-
-    // Chuyển đổi dữ liệu từ ROS PointCloud2 sang PCL
-    pcl::PointCloud<PointXYZI> tempCloud;
-    pcl::fromROSMsg(*msg, tempCloud);
-
-    // Copy dữ liệu vào hàng đợi với timestamp tương ứng
-    CloudXYZITPtr newCloud(new CloudXYZIT);
-    newCloud->resize(tempCloud.size());
-
-    for (size_t i = 0; i < tempCloud.size(); ++i) {
-      newCloud->points[i].x = tempCloud.points[i].x;
-      newCloud->points[i].y = tempCloud.points[i].y;
-      newCloud->points[i].z = tempCloud.points[i].z;
-      newCloud->points[i].intensity = tempCloud.points[i].intensity;
-      newCloud->points[i].t = rel_time;
+        // Copy dữ liệu vào hàng đợi với timestamp tương ứng
+        cloud_queue.push_back(newCloud);
     }
 
-    cloud_queue.push_back(newCloud);
-  }
+    void Associate(const KdFLANNPtr &kdtreeMap,
+                   const CloudXYZIPtr &priormap, const CloudXYZITPtr &cloudRaw,
+                   const CloudXYZIPtr &cloudInB, const CloudXYZIPtr &cloudInW,
+                   vector<LidarCoef> &Coef)
+    {
+        ROS_ASSERT_MSG(cloudRaw->size() == cloudInB->size(),
+                       "cloudRaw: %d. cloudInB: %d", cloudRaw->size(),
+                       cloudInB->size());
+        
+        int knnSize = 6;
+        double minKnnSqDis = 0.5*0.5;
+        double min_planarity = 0.2, max_plane_dis = 0.3;
 
-  // Function to publish pose
-  void publishPose(double processTime) {
-    SE3d currentPose = GetTraj()->pose(processTime);
-    currPosets = processTime;
+        if (priormap->size() > knnSize)
+        {
+            int pointsCount = cloudInW->points.size();
+            vector<LidarCoef> Coef_;
+            Coef_.resize(pointsCount);
 
-    geometry_msgs::PoseStamped poseMsg;
-    poseMsg.header.stamp = ros::Time().fromSec(processTime);
-    poseMsg.header.frame_id = "map";
-    poseMsg.pose.position.x = currentPose.translation().x();
-    poseMsg.pose.position.y = currentPose.translation().y();
-    poseMsg.pose.position.z = currentPose.translation().z();
+            #pragma omp parallel for num_threads(MAX_THREADS)
+            for (int pidx = 0; pidx < pointsCount; pidx++)
+            {
+                double tpoint = cloudRaw->points[pidx].t;
+                PointXYZIT pointRaw = cloudRaw->points[pidx];
+                PointXYZI pointInB = cloudInB->points[pidx];
+                PointXYZI pointInW = cloudInW->points[pidx];
 
-    Eigen::Quaterniond q = currentPose.unit_quaternion();
-    poseMsg.pose.orientation.x = q.x();
-    poseMsg.pose.orientation.y = q.y();
-    poseMsg.pose.orientation.z = q.z();
-    poseMsg.pose.orientation.w = q.w();
+                Coef_[pidx].n = Vector4d(0, 0, 0, 0);
+                Coef_[pidx].t = -1;
 
-    relocPub.publish(poseMsg);
-  }
+                if (!Util::PointIsValid(pointInB))
+                {
+                    pointInB.x = 0;
+                    pointInB.y = 0;
+                    pointInB.z = 0;
+                    pointInB.intensity = 0;
+                    continue;
+                }
 
-  void updateStatus() {
-    auto now = std::chrono::steady_clock::now();
-    runTimeSec =
-        std::chrono::duration_cast<std::chrono::seconds>(now - startTime)
-            .count();
-    exceedTenSec = (runTimeSec >= 10.0);
+                if (!Util::PointIsValid(pointInW))
+                    continue;
 
-    currentPose = GetTraj()->pose(runTimeSec);
-    isWorking = hasMoved(currentPose);
-  }
 
-  void Associate(GaussianProcessPtr &traj, const KdFLANNPtr &kdtreeMap,
-                 const CloudXYZIPtr &priormap, const CloudXYZITPtr &cloudRaw,
-                 const CloudXYZIPtr &cloudInB, const CloudXYZIPtr &cloudInW,
-                 vector<LidarCoef> &Coef) {
-    ROS_ASSERT_MSG(cloudRaw->size() == cloudInB->size(),
-                   "cloudRaw: %d. cloudInB: %d", cloudRaw->size(),
-                   cloudInB->size());
+                vector<int> knn_idx(knnSize, 0);
+                vector<float> knn_sq_dis(knnSize, 0);
+                kdtreeMap->nearestKSearch(pointInW, knnSize, knn_idx, knn_sq_dis);
 
-    if (priormap->size() > knnSize) {
-      int pointsCount = cloudInW->points.size();
-      vector<LidarCoef> Coef_;
-      Coef_.resize(pointsCount);
+                vector<PointXYZI> nbrPoints;
+                if (knn_sq_dis.back() < minKnnSqDis)
+                    for (auto &idx : knn_idx)
+                        nbrPoints.push_back(priormap->points[idx]);
+                else
+                    continue;
 
-#pragma omp parallel for num_threads(MAX_THREADS)
-      for (int pidx = 0; pidx < pointsCount; pidx++) {
-        double tpoint = cloudRaw->points[pidx].t;
-        PointXYZIT pointRaw = cloudRaw->points[pidx];
-        PointXYZI pointInB = cloudInB->points[pidx];
-        PointXYZI pointInW = cloudInW->points[pidx];
+                // Fit the plane
+                if (Util::fitPlane(nbrPoints, min_planarity, max_plane_dis,
+                                   Coef_[pidx].n, Coef_[pidx].plnrty))
+                {
+                    Coef_[pidx].t = tpoint;
+                    Coef_[pidx].f = Vector3d(pointRaw.x, pointRaw.y, pointRaw.z);
+                    Coef_[pidx].finW = Vector3d(pointInW.x, pointInW.y, pointInW.z);
+                    Coef_[pidx].fdsk = Vector3d(pointInB.x, pointInB.y, pointInB.z);
+                }
+            }
 
-        Coef_[pidx].n = Vector4d(0, 0, 0, 0);
-        Coef_[pidx].t = -1;
-
-        if (!Util::PointIsValid(pointInB)) {
-          pointInB.x = 0;
-          pointInB.y = 0;
-          pointInB.z = 0;
-          pointInB.intensity = 0;
-          continue;
+            // Copy the coefficients to the buffer
+            Coef.clear();
+            int totalFeature = 0;
+            for (int pidx = 0; pidx < pointsCount; pidx++)
+            {
+                LidarCoef &coef = Coef_[pidx];
+                if (coef.t >= 0)
+                {
+                    Coef.push_back(coef);
+                    Coef.back().ptIdx = totalFeature;
+                    totalFeature++;
+                }
+            }
         }
-
-        if (!Util::PointIsValid(pointInW))
-          continue;
-
-        if (!traj->TimeInInterval(tpoint, 1e-6))
-          continue;
-
-        vector<int> knn_idx(knnSize, 0);
-        vector<float> knn_sq_dis(knnSize, 0);
-        kdtreeMap->nearestKSearch(pointInW, knnSize, knn_idx, knn_sq_dis);
-
-        vector<PointXYZI> nbrPoints;
-        if (knn_sq_dis.back() < minKnnSqDis)
-          for (auto &idx : knn_idx)
-            nbrPoints.push_back(priormap->points[idx]);
-        else
-          continue;
-
-        // Fit the plane
-        if (Util::fitPlane(nbrPoints, min_planarity, max_plane_dis,
-                           Coef_[pidx].n, Coef_[pidx].plnrty)) {
-          // ROS_ASSERT(tpoint >= 0);
-          Coef_[pidx].t = tpoint;
-          Coef_[pidx].f = Vector3d(pointRaw.x, pointRaw.y, pointRaw.z);
-          Coef_[pidx].finW = Vector3d(pointInW.x, pointInW.y, pointInW.z);
-          Coef_[pidx].fdsk = Vector3d(pointInB.x, pointInB.y, pointInB.z);
-        }
-      }
-
-      // Copy the coefficients to the buffer
-      Coef.clear();
-      int totalFeature = 0;
-      for (int pidx = 0; pidx < pointsCount; pidx++) {
-        LidarCoef &coef = Coef_[pidx];
-        if (coef.t >= 0) {
-          Coef.push_back(coef);
-          Coef.back().ptIdx = totalFeature;
-          totalFeature++;
-        }
-      }
     }
-  }
 
-  GaussianProcessPtr &GetTraj() { return traj; }
+    bool hasMoved(const SE3d &currentPose) const
+    {
+        double pos_diff = (currentPose.translation() - initPose.pos).norm();
+        return (pos_diff > 1);
+    }
 
-  bool hasMoved(const SE3d &currentPose) const {
-
-    double pos_diff = (currentPose.translation() - initPose.pos).norm();
-    return (pos_diff > 1);
-  }
-
-  // Getter for Relocalization
-  double getRunTimeSec() const { return runTimeSec; }
-  bool hasExceededTenSec() const { return exceedTenSec; }
-  bool getIsWorking() const { return isWorking; }
-  int getID() const { return liteloam_id; }
+    // Getter for Relocalization
+    double timeSinceStart() const { return ros::Time::now().toSec() - startTime; }
+    bool loamConverged() const { return false; }
+    bool isRunning() const { return running; }
+    int getID() const { return liteloam_id; }
 };
 
-class Relocalization {
+class Relocalization
+{
 
 private:
-  // Node handler
-  ros::NodeHandlePtr nh_ptr;
+    // Node handler
+    ros::NodeHandlePtr nh_ptr;
+    
+    // Subcriber of lidar pointcloud
+    ros::Subscriber lidarCloudSub;
 
-  // Subcriber of lidar pointcloud
-  ros::Subscriber lidarCloudSub;
+    // Subscriber to uloc prediction
+    ros::Subscriber ulocSub;
 
-  ros::Publisher relocPub;
+    // Relocalization pose publication
+    ros::Publisher relocPub;
 
-  ros::Subscriber ulocSub;
+    CloudXYZIPtr priorMap;
+    KdFLANNPtr kdTreeMap;
+    bool priorMapReady = false;
 
-  CloudXYZIPtr priorMap;
-  KdFLANNPtr kdTreeMap;
-
-  std::vector<std::shared_ptr<LITELOAM>> loamInstances;
-
-  bool priorMapReady = false;
+    mutex loam_mtx;
+    std::vector<std::shared_ptr<LITELOAM>> loamInstances;
+    std::thread checkLoamThread;
 
 public:
-  // Destructor
-  ~Relocalization() {}
+    // Destructor
+    ~Relocalization() {}
 
-  Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_) {
-    // Initialize the variables and subsribe/advertise topics here
-    Initialize();
-  }
+    Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
+    {
+        // Initialize the variables and subsribe/advertise topics here
+        Initialize();
 
-  void Initialize() {
-
-    // ULOC pose subcriber
-    ulocSub =
-        nh_ptr->subscribe("/uwb_pose", 10, &Relocalization::ULOCCallback, this);
-
-    // loadPriorMap
-    string prior_map_dir = "";
-    nh_ptr->param("/prior_map_dir", prior_map_dir, string(""));
-    printf("prior_map_dir: %s\n", prior_map_dir.c_str());
-
-    this->priorMap.reset(new pcl::PointCloud<pcl::PointXYZI>());
-    this->kdTreeMap.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
-
-    std::string pcd_file = prior_map_dir + "/priormap.pcd";
-
-    printf("Prebuilt pcd map found, loading...\n");
-
-    pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
-
-    printf("Prior Map (%zu points) \n", priorMap->size());
-
-    this->kdTreeMap->setInputCloud(this->priorMap);
-
-    priorMapReady = true;
-
-    printf("Prior Map Load Completed \n");
-  }
-
-  void ULOCCallback(const geometry_msgs::PoseStamped::ConstPtr &msg) {
-    if (!priorMapReady) {
-      ROS_WARN("[Relocalization] Prior map is not ready, skipping ULOCCallback.");
-      return;
+        // Make thread to monitor the loadm instances
+        checkLoamThread = std::thread(&Relocalization::CheckLiteLoams, this);
     }
-  
-    // Retrieve pose from UWB (ULOC)
-    mytf pose(*msg);
-  
-    // If the number of LITELOAM instances is less than 10, create a new one
-    if (loamInstances.size() < 10) {
-      int newID = loamInstances.size();
-      auto newLoam =
-          std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose, newID, nh_ptr);
-      loamInstances.push_back(newLoam);
-      ROS_INFO("[Relocalization] Created new LITELOAM instance with ID %d. "
-               "Total instances: %lu",
-               newID, loamInstances.size());
+
+    void CheckLiteLoams()
+    {
+        while(ros::ok())
+        {
+            {
+                lock_guard<mutex> lg(loam_mtx);
+
+                // Iterate through existing instances to check their status
+                for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx)
+                {
+                    auto &loam = loamInstances[lidx];
+
+                    if (loam == nullptr)
+                        continue;
+
+                    // Restart the instance if it has exceeded 10 seconds and is not working
+                    if (loam->timeSinceStart() > 10 && !loam->loamConverged() && loam->isRunning())
+                    {
+                        ROS_INFO("[Relocalization] LITELOAM %d exceeded 10 sec and is not working. Restarting...",
+                                loam->getID());
+                                            
+                        loam->stop();
+                    }
+                    else if(loam->loamConverged())
+                    {
+                        // Do something to begin relocalization 
+                    }
+                }
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
-  
-    // Iterate through existing instances and check their status
-    for (size_t i = 0; i < loamInstances.size(); ++i) {
-      auto &loam = loamInstances[i];
-      // Update runtime status, movement status, etc.
-      loam->updateStatus();
-  
-      // If it has exceeded 10 seconds and is not working, restart the instance
-      if (loam->hasExceededTenSec() && !loam->getIsWorking()) {
-        ROS_WARN("[Relocalization] LITELOAM %d exceeded 10 sec and is not working. "
-                 "Restarting...",
-                 loam->getID());
-  
-        // -- IMPORTANT: Remove the old instance before replacing it --
-        loamInstances.erase(loamInstances.begin() + i);  // Remove old instance
-        auto newLoam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose, loam->getID(), nh_ptr);
-        loamInstances.insert(loamInstances.begin() + i, newLoam); // Insert new instance at the same index
-  
-        ROS_INFO("[Relocalization] LITELOAM %d restarted.",
-                 newLoam->getID());
-      }
+    
+    void Initialize()
+    {
+        // ULOC pose subcriber
+        ulocSub = nh_ptr->subscribe("/uwb_pose", 10, &Relocalization::ULOCCallback, this);
+
+        // loadPriorMap
+        string prior_map_dir = "";
+        nh_ptr->param("/prior_map_dir", prior_map_dir, string(""));
+        ROS_INFO("prior_map_dir: %s", prior_map_dir.c_str());
+
+        this->priorMap.reset(new pcl::PointCloud<pcl::PointXYZI>());
+        this->kdTreeMap.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+
+        std::string pcd_file = prior_map_dir + "/priormap.pcd";
+        ROS_INFO("Prebuilt pcd map found, loading...");
+
+        pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
+        ROS_INFO("Prior Map (%zu points).", priorMap->size());
+
+        this->kdTreeMap->setInputCloud(this->priorMap);
+        priorMapReady = true;
+
+        ROS_INFO("Prior Map Load Completed \n");
     }
-  }
+
+    void ULOCCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+    {
+        if (!priorMapReady)
+        {
+            ROS_WARN("[Relocalization] Prior map is not ready, skipping ULOCCallback.");
+            return;
+        }
+
+        mytf pose(*msg);
+
+        {
+            lock_guard<mutex> lg(loam_mtx);
+
+            // If the number of LITELOAM instances is less than 10, create one more
+            if (loamInstances.size() < 10)
+            {
+                int newID = loamInstances.size(); // Assign a new ID based on the current size
+                auto newLoam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose, newID, nh_ptr);
+                loamInstances.push_back(newLoam);
+                ROS_INFO("[Relocalization] Created new LITELOAM instance with ID %d. "
+                        "Total instances: %lu",
+                        newID, loamInstances.size());
+            }
+
+            for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx)
+            {
+                auto &loam = loamInstances[lidx];
+
+                // Add a new loam if the current loam is null
+                if (!loam->isRunning())
+                {
+                    // Replace the instance with a new one using the same ID
+                    loam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose, loam->getID(), nh_ptr);
+                    ROS_INFO("[Relocalization] LITELOAM %d restarted.", loam->getID());
+
+                    break;
+                }
+            }
+        }
+    }
 };
 
-int main(int argc, char **argv) {
-  ros::init(argc, argv, "relocalization");
-  ros::NodeHandle nh("~");
-  ros::NodeHandlePtr nh_ptr = boost::make_shared<ros::NodeHandle>(nh);
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, "relocalization");
+    ros::NodeHandle nh("~");
+    ros::NodeHandlePtr nh_ptr = boost::make_shared<ros::NodeHandle>(nh);
 
-  ROS_INFO(KGRN "----> Relocalization Started." RESET);
+    ROS_INFO(KGRN "----> Relocalization Started." RESET);
 
-  Relocalization relocalization(nh_ptr);
+    Relocalization relocalization(nh_ptr);
 
-  ros::MultiThreadedSpinner spinner(0);
-  spinner.spin();
+    ros::MultiThreadedSpinner spinner(0);
+    spinner.spin();
 
-  return 0;
+    return 0;
 }

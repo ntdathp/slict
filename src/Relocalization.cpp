@@ -159,18 +159,23 @@ public:
           pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
           icp.setInputSource(sourceFiltered);  // Source cloud (moving)
           icp.setInputTarget(priorMap);        // Target cloud (static reference map)
-  
+          
           // Set ICP parameters
           icp.setMaxCorrespondenceDistance(2.0);   // Max distance for point correspondence
           icp.setMaximumIterations(50);           // Max iterations for convergence
           icp.setTransformationEpsilon(1e-6);     // Stop if transformation difference < threshold
           icp.setEuclideanFitnessEpsilon(1e-6);   // Stop if fitness error < threshold
+          
+          // Sử dụng initPose làm initial guess
+          Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
+          initial_guess.block<3, 3>(0, 0) = initPose.rot.toRotationMatrix().cast<float>(); // Gán ma trận quay từ initPose
+          initial_guess.block<3, 1>(0, 3) = initPose.pos.cast<float>(); // Gán vị trí từ initPose
   
           //------------------------------------------------
           // 3) Execute ICP
           //------------------------------------------------
           pcl::PointCloud<pcl::PointXYZI>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZI>());
-          icp.align(*aligned);
+          icp.align(*aligned, initial_guess);
   
           // Retrieve ICP fitness score
           double icpFitnessThres = 0.3;   // Threshold for ICP result acceptance
@@ -179,7 +184,7 @@ public:
           //------------------------------------------------
           // 4) Evaluate ICP result
           //------------------------------------------------
-          if (icp.hasConverged() && icpFitnessRes <= icpFitnessThres)
+          if (icp.hasConverged()) // && icpFitnessRes <= icpFitnessThres)
           {
               ROS_INFO_STREAM("ICP converged. Score: " << icpFitnessRes);
   
@@ -422,6 +427,21 @@ public:
         pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
         ROS_INFO("Prior Map (%zu points).", priorMap->size());
 
+        double priormap_viz_res = 0.2;
+        pcl::UniformSampling<pcl::PointXYZI> downsampler;
+        downsampler.setInputCloud(this->priorMap);
+        downsampler.setRadiusSearch(priormap_viz_res);
+
+        // Create a new point cloud to store the downsampled map
+        pcl::PointCloud<pcl::PointXYZI>::Ptr downsampledMap(new pcl::PointCloud<pcl::PointXYZI>());
+        downsampler.filter(*downsampledMap);
+
+        // Assign the downsampled map to priorMap
+        this->priorMap = downsampledMap;
+
+        ROS_INFO("Downsampled Prior Map (%zu points).", priorMap->size());
+
+        // Update kdTree with the new downsampled map
         this->kdTreeMap->setInputCloud(this->priorMap);
         priorMapReady = true;
 

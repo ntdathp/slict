@@ -50,6 +50,7 @@ private:
 
     // Publisher
     ros::Publisher relocPub;
+    ros::Publisher alignedCloudPub;
 
     // Queue + mutex
     std::deque<CloudXYZIPtr> cloud_queue;
@@ -102,6 +103,8 @@ public:
         std::cout << "[LITELOAM] " << liteloam_id
                   << " Subscribed to /lastcloud and publishing to /liteloam_pose"
                   << std::endl;
+
+        alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
         startTime = ros::Time::now().toSec();
 
@@ -231,7 +234,7 @@ public:
             // 4) Publish the best ICP result
             //------------------------------------------------
             double icpFitnessThres = 0.3; 
-            if (best_fitness < icpFitnessThres && best_fitness < std::numeric_limits<double>::max())
+            if (best_fitness < std::numeric_limits<double>::max()) //&& best_fitness < icpFitnessThres 
             {
                 ROS_INFO_STREAM("ICP converged. Best fitness: " << best_fitness);
     
@@ -255,6 +258,18 @@ public:
                 pose_msg.pose.orientation.w = q_best.w();
     
                 relocPub.publish(pose_msg);
+
+                pcl::PointCloud<pcl::PointXYZI>::Ptr alignedCloud(new pcl::PointCloud<pcl::PointXYZI>());
+                pcl::transformPointCloud(*sourceFiltered, *alignedCloud, best_trans);
+            
+                sensor_msgs::PointCloud2 alignedMsg;
+                pcl::toROSMsg(*alignedCloud, alignedMsg);
+            
+                // Set header cho Rviz
+                alignedMsg.header.stamp = pose_msg.header.stamp; // hoặc cloudTimestamp
+                alignedMsg.header.frame_id = "map";
+            
+                alignedCloudPub.publish(alignedMsg);
             }
             else
             {
@@ -463,7 +478,7 @@ public:
         pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
         ROS_INFO("Prior Map (%zu points).", priorMap->size());
 
-        double priormap_viz_res = 0.2;
+        double priormap_viz_res = 1;
         pcl::UniformSampling<pcl::PointXYZI> downsampler;
         downsampler.setInputCloud(this->priorMap);
         downsampler.setRadiusSearch(priormap_viz_res);

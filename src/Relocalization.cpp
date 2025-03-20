@@ -115,121 +115,157 @@ public:
 
     void processBuffer()
     {
-      while (running && ros::ok())
-      {
-          if (cloud_queue.empty())
-          {
-              std::this_thread::sleep_for(std::chrono::milliseconds(10));
-              continue;
-          }
-  
-          // Start measuring processing time
-          ros::Time startProcessingTime = ros::Time::now();
-  
-          CloudXYZIPtr cloudToProcess;
-          {
-              std::lock_guard<std::mutex> lock(buffer_mutex);
-              cloudToProcess = cloud_queue.front();
-              cloud_queue.pop_front();
-          }
-          
-          uint64_t pcl_timestamp = cloudToProcess->header.stamp;
-          ros::Time cloudTimestamp = ros::Time(pcl_timestamp / 1e6, (pcl_timestamp % static_cast<uint64_t>(1e6)) * 1e3);
-  
-          if (liteloam_id == 0)
-              ROS_INFO("liteloam_id %d. Start time: %f. Running Time: %f.",
-                       liteloam_id, startTime, timeSinceStart());
-  
-          //------------------------------------------------
-          // 1) Pre-processing of input cloud
-          //------------------------------------------------
-          pcl::PointCloud<pcl::PointXYZI>::Ptr sourceCloud(new pcl::PointCloud<pcl::PointXYZI>());
-          pcl::copyPointCloud(*cloudToProcess, *sourceCloud);
-  
-          // Apply VoxelGrid filter to downsample the point cloud
-          pcl::VoxelGrid<pcl::PointXYZI> vg;
-          vg.setInputCloud(sourceCloud);
-          vg.setLeafSize(0.3f, 0.3f, 0.3f);  // Adjust accordingly
-          pcl::PointCloud<pcl::PointXYZI>::Ptr sourceFiltered(new pcl::PointCloud<pcl::PointXYZI>());
-          vg.filter(*sourceFiltered);
-  
-          //------------------------------------------------
-          // 2) Configure ICP
-          //------------------------------------------------
-          pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
-          icp.setInputSource(sourceFiltered);  // Source cloud (moving)
-          icp.setInputTarget(priorMap);        // Target cloud (static reference map)
-          
-          // Set ICP parameters
-          icp.setMaxCorrespondenceDistance(2.0);   // Max distance for point correspondence
-          icp.setMaximumIterations(50);           // Max iterations for convergence
-          icp.setTransformationEpsilon(1e-6);     // Stop if transformation difference < threshold
-          icp.setEuclideanFitnessEpsilon(1e-6);   // Stop if fitness error < threshold
-          
-          // Sử dụng initPose làm initial guess
-          Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
-          initial_guess.block<3, 3>(0, 0) = initPose.rot.toRotationMatrix().cast<float>(); // Gán ma trận quay từ initPose
-          initial_guess.block<3, 1>(0, 3) = initPose.pos.cast<float>(); // Gán vị trí từ initPose
-  
-          //------------------------------------------------
-          // 3) Execute ICP
-          //------------------------------------------------
-          pcl::PointCloud<pcl::PointXYZI>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZI>());
-          icp.align(*aligned, initial_guess);
-  
-          // Retrieve ICP fitness score
-          double icpFitnessThres = 0.3;   // Threshold for ICP result acceptance
-          double icpFitnessRes = icp.getFitnessScore();
-  
-          //------------------------------------------------
-          // 4) Evaluate ICP result
-          //------------------------------------------------
-          if (icp.hasConverged()) // && icpFitnessRes <= icpFitnessThres)
-          {
-              ROS_INFO_STREAM("ICP converged. Score: " << icpFitnessRes);
-  
-              // Get the final transformation matrix from ICP
-              Eigen::Matrix4f icpTransformation = icp.getFinalTransformation();
-              Eigen::Matrix3f R = icpTransformation.block<3,3>(0,0);
-              Eigen::Vector3f t = icpTransformation.block<3,1>(0,3);
-  
-              Eigen::Quaternionf q(R);
-              geometry_msgs::PoseStamped pose_msg;
-  
-              // Calculate processing duration
-              ros::Duration processingDuration = ros::Time::now() - startProcessingTime;
-  
-              // Set pose message timestamp as the cloud's original timestamp + processing duration
-              pose_msg.header.stamp = cloudTimestamp + processingDuration;
-              pose_msg.header.frame_id = "map";
-  
-              // Assign position
-              pose_msg.pose.position.x = t.x();
-              pose_msg.pose.position.y = t.y();
-              pose_msg.pose.position.z = t.z();
-  
-              // Assign orientation
-              pose_msg.pose.orientation.x = q.x();
-              pose_msg.pose.orientation.y = q.y();
-              pose_msg.pose.orientation.z = q.z();
-              pose_msg.pose.orientation.w = q.w();
-  
-              // Publish estimated pose
-              relocPub.publish(pose_msg);
-          }
-          else
-          {
-              ROS_WARN("ICP did not converge or Fitness Score (%f) > Threshold (%f)", icpFitnessRes, icpFitnessThres);
-          }
-  
-          //------------------------------------------------
-          // 5) Repeat loop
-          //------------------------------------------------
-      }
-  
-      if (liteloam_id == 0)
-          ROS_INFO(KRED "liteloam_id %d exits." RESET, liteloam_id);
-  }
+        while (running && ros::ok())
+        {
+            if (cloud_queue.empty())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+    
+            // Start measuring processing time
+            ros::Time startProcessingTime = ros::Time::now();
+    
+            CloudXYZIPtr cloudToProcess;
+            {
+                std::lock_guard<std::mutex> lock(buffer_mutex);
+                cloudToProcess = cloud_queue.front();
+                cloud_queue.pop_front();
+            }
+    
+            uint64_t pcl_timestamp = cloudToProcess->header.stamp;
+            ros::Time cloudTimestamp = ros::Time(
+                pcl_timestamp / 1e6,
+                (pcl_timestamp % static_cast<uint64_t>(1e6)) * 1e3);
+    
+            if (liteloam_id == 0)
+            {
+                ROS_INFO("liteloam_id %d. Start time: %f. Running Time: %f.",
+                         liteloam_id, startTime, timeSinceStart());
+            }
+    
+            //------------------------------------------------
+            // 1) Pre-processing of input cloud
+            //------------------------------------------------
+            pcl::PointCloud<pcl::PointXYZI>::Ptr sourceCloud(new pcl::PointCloud<pcl::PointXYZI>());
+            pcl::copyPointCloud(*cloudToProcess, *sourceCloud);
+    
+            // Apply VoxelGrid filter to downsample the point cloud
+            pcl::VoxelGrid<pcl::PointXYZI> vg;
+            vg.setInputCloud(sourceCloud);
+            vg.setLeafSize(0.3f, 0.3f, 0.3f);
+            pcl::PointCloud<pcl::PointXYZI>::Ptr sourceFiltered(new pcl::PointCloud<pcl::PointXYZI>());
+            vg.filter(*sourceFiltered);
+    
+            //------------------------------------------------
+            // 2) Compute yaw from initPose
+            //------------------------------------------------
+            double roll, pitch, yaw_init;
+            {
+                tf::Matrix3x3(
+                    tf::Quaternion(initPose.rot.x(),
+                                   initPose.rot.y(),
+                                   initPose.rot.z(),
+                                   initPose.rot.w()))
+                    .getRPY(roll, pitch, yaw_init);
+            }
+    
+            // Between init [-20°, 20°], step 5°
+            std::vector<double> yaw_candidates;
+            for (double delta = -20.0; delta <= 20.0; delta += 5.0)
+            {
+                double yaw_rad = (yaw_init + (delta * M_PI / 180.0));
+                yaw_candidates.push_back(yaw_rad);
+            }
+    
+            //------------------------------------------------
+            // 3) Iterate through yaw candidates & run ICP
+            //------------------------------------------------
+            double best_fitness = std::numeric_limits<double>::max();
+            Eigen::Matrix4f best_trans = Eigen::Matrix4f::Identity();
+    
+            // ICP
+            pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
+            icp.setInputSource(sourceFiltered); // moving cloud
+            icp.setInputTarget(priorMap);       // static map
+    
+            // ICP parameters 
+            icp.setMaxCorrespondenceDistance(20.0);
+            icp.setMaximumIterations(10);
+            icp.setTransformationEpsilon(1e-6);
+            icp.setEuclideanFitnessEpsilon(1e-6);
+    
+            //initPose (Eigen::Quaternion -> Matrix3f)
+            Eigen::Matrix3f R_init = initPose.rot.toRotationMatrix().cast<float>();
+            // 
+            Eigen::Vector3f t_init = initPose.pos.cast<float>();
+    
+            // Multiple yaw
+            for (double yaw_candidate : yaw_candidates)
+            {
+                
+                float yaw_f = static_cast<float>(yaw_candidate);
+    
+                Eigen::AngleAxisf yawAngle(yaw_f, Eigen::Vector3f::UnitZ());
+    
+                Eigen::Matrix3f R_candidate = R_init * yawAngle.toRotationMatrix();
+    
+                // Initial guess
+                Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
+                guess.block<3,3>(0,0) = R_candidate;
+                guess.block<3,1>(0,3) = t_init;
+    
+                // Run ICP
+                pcl::PointCloud<pcl::PointXYZI>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZI>());
+                icp.align(*aligned, guess);
+    
+                double fitness = icp.getFitnessScore();
+                if (icp.hasConverged() && fitness < best_fitness)
+                {
+                    best_fitness = fitness;
+                    best_trans = icp.getFinalTransformation();
+                }
+            }
+    
+            //------------------------------------------------
+            // 4) Publish the best ICP result
+            //------------------------------------------------
+            double icpFitnessThres = 0.3; 
+            if (best_fitness < icpFitnessThres && best_fitness < std::numeric_limits<double>::max())
+            {
+                ROS_INFO_STREAM("ICP converged. Best fitness: " << best_fitness);
+    
+                Eigen::Matrix3f R_best = best_trans.block<3,3>(0,0);
+                Eigen::Vector3f t_best = best_trans.block<3,1>(0,3);
+                Eigen::Quaternionf q_best(R_best);
+    
+                geometry_msgs::PoseStamped pose_msg;
+
+                ros::Duration processingDuration = ros::Time::now() - startProcessingTime;
+                pose_msg.header.stamp = cloudTimestamp + processingDuration;
+                pose_msg.header.frame_id = "map";
+    
+                pose_msg.pose.position.x = t_best.x();
+                pose_msg.pose.position.y = t_best.y();
+                pose_msg.pose.position.z = t_best.z();
+    
+                pose_msg.pose.orientation.x = q_best.x();
+                pose_msg.pose.orientation.y = q_best.y();
+                pose_msg.pose.orientation.z = q_best.z();
+                pose_msg.pose.orientation.w = q_best.w();
+    
+                relocPub.publish(pose_msg);
+            }
+            else
+            {
+                ROS_WARN("ICP did not converge with any yaw candidate. Best fitness: %f", best_fitness);
+            }
+        }
+    
+        if (liteloam_id == 0)
+            ROS_INFO(KRED "liteloam_id %d exits." RESET, liteloam_id);
+    }
+    
 
     void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
     {

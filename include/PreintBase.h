@@ -255,7 +255,7 @@ protected:
         Eigen::Vector3d dba = Bai - linearized_ba;
         Eigen::Vector3d dbg = Bgi - linearized_bg;
 
-        dq = (delta_q * Util::deltaQ(ddq_dbg * dbg));
+        dq = (delta_q * Util::QExp(ddq_dbg * dbg));
         dq.normalize();
         dv = Qi*(delta_v + ddv_dba * dba + ddv_dbg * dbg - Qi.inverse()*GRAV*sum_dt);
         dp = Qi*(delta_p + ddp_dba * dba + ddp_dbg * dbg + Qi.inverse()*Vi*sum_dt - Qi.inverse()*GRAV*sum_dt*sum_dt/2);
@@ -269,7 +269,7 @@ protected:
         Eigen::Vector3d dba = Bai - linearized_ba;
         Eigen::Vector3d dbg = Bgi - linearized_bg;
 
-        Eigen::Quaterniond corrected_delta_q = delta_q * Util::deltaQ(ddq_dbg * dbg);
+        Eigen::Quaterniond corrected_delta_q = delta_q * Util::QExp(ddq_dbg * dbg);
         Eigen::Vector3d corrected_delta_v = delta_v + ddv_dba * dba + ddv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = delta_p + ddp_dba * dba + ddp_dbg * dbg;
 

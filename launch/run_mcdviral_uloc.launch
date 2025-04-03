@@ -151,8 +151,8 @@
       <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/>
 
       <!--- Run Rviz-->
-      <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
-            args="-d $(find slict)/launch/mcdviral.rviz" />
+      <!-- <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
+            args="-d $(find slict)/launch/mcdviral.rviz" /> -->
 
       <!-- An offset time -->
       <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>

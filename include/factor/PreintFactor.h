@@ -138,7 +138,7 @@ class PreintFactor : public ceres::SizedCostFunction<15, 7, 3, 6, 7, 3, 6>
                 // Jacobians from preintegrated quaternion (gamma)---------------------------------------------
 
                 Eigen::Quaterniond corrected_delta_q = pre_integration->delta_q
-                                                        * Util::deltaQ(dq_dbg * (Bgi - pre_integration->linearized_bg));
+                                                        * Util::QExp(dq_dbg * (Bgi - pre_integration->linearized_bg));
                 jacobian_pose_i.block<3, 3>(O_R, O_R) = -( Util::Qright(corrected_delta_q)
                                                            * Util::Qleft(Qj.inverse() * Qi)
                                                          ).bottomRightCorner<3, 3>();
@@ -246,7 +246,7 @@ class PreintFactor : public ceres::SizedCostFunction<15, 7, 3, 6, 7, 3, 6>
 
                 Eigen::Quaterniond corrected_delta_q = pre_integration->delta_q
                                                        *
-                                                       Util::deltaQ(dq_dbg * (Bgi - pre_integration->linearized_bg));
+                                                       Util::QExp(dq_dbg * (Bgi - pre_integration->linearized_bg));
 
                 jacobian_pose_j.block<3, 3>(O_R, O_R) = Util::Qleft( corrected_delta_q.inverse()
                                                                      * Qi.inverse() * Qj

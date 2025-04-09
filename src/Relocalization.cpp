@@ -127,16 +127,15 @@ public:
     cloud_queue.push_back(newC);
   }
 
-  // Main thread
   void processBuffer() {
     while (running && ros::ok()) {
-      // 1) Check if queue empty
+      // 1) Check if any cloud is in the queue
       if (cloud_queue.empty()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         continue;
       }
 
-      // 2) Pop front cloud
+      // 2) Retrieve the next cloud from the queue
       CloudXYZIPtr cloudToProcess;
       {
         std::lock_guard<std::mutex> lk(cloud_mutex);
@@ -144,21 +143,24 @@ public:
         cloud_queue.pop_front();
       }
 
-      // 3) Convert stamp
+      // Convert timestamp from PCL header format to ros::Time
       uint64_t pcl_stamp = cloudToProcess->header.stamp;
       ros::Time cloudStamp(pcl_stamp / 1000000ULL,
                            (pcl_stamp % 1000000ULL) * 1000ULL);
       double currentCloudTime = cloudStamp.toSec();
 
+      // Keep track of the previous cloud’s time for IMU integration bounds
       double prevCloudTime =
           (last_cloud_time_ < 0.0 ? currentCloudTime : last_cloud_time_);
       last_cloud_time_ = currentCloudTime;
 
+      // For demonstration, print when liteloam_id == 0
       if (liteloam_id == 0) {
         ROS_INFO("liteloam %d run=%.3f", liteloam_id, timeSinceStart());
       }
 
-      // (A) Downsample
+      // ----------------------------------------------------------------------
+      // (A) Downsample the input point cloud
       pcl::PointCloud<PointXYZI>::Ptr src(new pcl::PointCloud<PointXYZI>());
       pcl::copyPointCloud(*cloudToProcess, *src);
 
@@ -169,7 +171,9 @@ public:
           new pcl::PointCloud<PointXYZI>());
       vg.filter(*srcFiltered);
 
-      // (B) Collect IMU in [prevCloudTime, currentCloudTime]
+      // ----------------------------------------------------------------------
+      // (B) Collect IMU messages in the time window [prevCloudTime,
+      // currentCloudTime]
       std::deque<sensor_msgs::ImuConstPtr> localIMU;
       {
         std::lock_guard<std::mutex> lk(imu_mutex);
@@ -186,17 +190,20 @@ public:
         }
       }
 
-      // (C) IMU Preintegration
-      double ACC_N = 0.6, ACC_W = 0.08;
-      double GYR_N = 0.05, GYR_W = 0.003;
-      Eigen::Vector3d GRAV(0, 0, 9.81);
-
-      // let's keep same bias for now
-      Eigen::Vector3d initBa(0, 0, 0);
-      Eigen::Vector3d initBg(0, 0, 0);
-
+      // ----------------------------------------------------------------------
+      // (C) Create an IMU preintegration object if IMU data is available
       PreintBase *preint_imu = nullptr;
       if (!localIMU.empty()) {
+        // Example noise parameters (adjust them according to your sensor spec)
+        double ACC_N = 0.6, ACC_W = 0.08;
+        double GYR_N = 0.05, GYR_W = 0.003;
+        Eigen::Vector3d GRAV(0, 0, 9.81);
+
+        // Assume zero bias for demonstration (or retrieve from your system)
+        Eigen::Vector3d initBa(0, 0, 0);
+        Eigen::Vector3d initBg(0, 0, 0);
+
+        // Initialize the preintegration with the first IMU reading
         Eigen::Vector3d firstAcc(localIMU.front()->linear_acceleration.x,
                                  localIMU.front()->linear_acceleration.y,
                                  localIMU.front()->linear_acceleration.z);
@@ -208,29 +215,33 @@ public:
             new PreintBase(firstAcc, firstGyr, initBa, initBg, true, ACC_N,
                            ACC_W, GYR_N, GYR_W, GRAV, liteloam_id);
 
+        // Integrate the rest of the IMU measurements
         for (size_t k = 1; k < localIMU.size(); k++) {
           double dt = localIMU[k]->header.stamp.toSec() -
                       localIMU[k - 1]->header.stamp.toSec();
+
           Eigen::Vector3d aK(localIMU[k]->linear_acceleration.x,
                              localIMU[k]->linear_acceleration.y,
                              localIMU[k]->linear_acceleration.z);
           Eigen::Vector3d gK(localIMU[k]->angular_velocity.x,
                              localIMU[k]->angular_velocity.y,
                              localIMU[k]->angular_velocity.z);
+
           preint_imu->push_back(dt, aK, gK);
         }
       }
 
-      // (D) ICP
+      // ----------------------------------------------------------------------
+      // (D) Perform ICP using the downsampled cloud srcFiltered
       pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp;
       icp.setInputSource(srcFiltered);
       icp.setInputTarget(priorMap);
-      icp.setMaxCorrespondenceDistance(20.);
+      icp.setMaxCorrespondenceDistance(20.0);
       icp.setMaximumIterations(10);
       icp.setTransformationEpsilon(1e-6);
       icp.setEuclideanFitnessEpsilon(1e-6);
 
-      // We use prev_q to guess yaw
+      // Use the previous quaternion to estimate an initial yaw
       double roll, pitch, yaw;
       {
         tf::Matrix3x3 Rq(
@@ -241,9 +252,9 @@ public:
       double best_fitness = 1e9;
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
 
-      // scan yaw -20->20 step=5 deg
+      // Scan +/- 20 degrees in yaw (step of 5) to find the best fitness
       for (double d = -20; d <= 20; d += 5) {
-        double yaw_f = yaw + d * M_PI / 180.;
+        double yaw_f = yaw + d * M_PI / 180.0;
         Eigen::AngleAxisf yawA((float)yaw_f, Eigen::Vector3f::UnitZ());
         Eigen::Matrix3f Rg =
             prev_q.cast<float>().toRotationMatrix() * yawA.toRotationMatrix();
@@ -266,71 +277,41 @@ public:
         }
       }
 
-      // convert bestTrans => pose_j
+      // If ICP did not converge, skip this iteration
+      if (best_fitness >= 1e9) {
+        ROS_WARN("ICP not converge. best_fitness=%.3f", best_fitness);
+        if (preint_imu) {
+          delete preint_imu;
+        }
+        continue;
+      }
+
+      // Convert bestTrans to a pose (td, qd)
       Eigen::Matrix3f Rb = bestTrans.block<3, 3>(0, 0);
       Eigen::Vector3f tb = bestTrans.block<3, 1>(0, 3);
       Eigen::Quaternionf qb(Rb);
       Eigen::Quaterniond qd(qb.w(), qb.x(), qb.y(), qb.z());
       Eigen::Vector3d td(tb.x(), tb.y(), tb.z());
 
-      // Publish
-      if (best_fitness < 1e9) {
-        geometry_msgs::PoseStamped ps;
-        ps.header.stamp = cloudStamp;
-        ps.header.frame_id = "map";
-        ps.pose.position.x = tb.x();
-        ps.pose.position.y = tb.y();
-        ps.pose.position.z = tb.z();
-        ps.pose.orientation.x = qb.x();
-        ps.pose.orientation.y = qb.y();
-        ps.pose.orientation.z = qb.z();
-        ps.pose.orientation.w = qb.w();
+      // ----------------------------------------------------------------------
+      // (E) Now incorporate IMU factor via ceres
+      Eigen::Vector3d final_t;
+      Eigen::Quaterniond final_q;
 
-        relocPub.publish(ps);
-
-        // aligned
-        pcl::PointCloud<PointXYZI>::Ptr alignedC(
-            new pcl::PointCloud<PointXYZI>());
-        pcl::transformPointCloud(*srcFiltered, *alignedC, bestTrans);
-
-        sensor_msgs::PointCloud2 pc2;
-        pcl::toROSMsg(*alignedC, pc2);
-        pc2.header.stamp = cloudStamp;
-        pc2.header.frame_id = "map";
-        alignedCloudPub.publish(pc2);
-      } else {
-        ROS_WARN("ICP not converge. best_fitness=%.3f", best_fitness);
-      }
-
-      // (E) Now we do IMU factor => param_i, param_j
       if (preint_imu) {
-        // param i
-        double param_pose_i[7];
-        param_pose_i[0] = prev_t.x();
-        param_pose_i[1] = prev_t.y();
-        param_pose_i[2] = prev_t.z();
-        param_pose_i[3] = prev_q.x();
-        param_pose_i[4] = prev_q.y();
-        param_pose_i[5] = prev_q.z();
-        param_pose_i[6] = prev_q.w();
-
+        // Prepare parameter blocks for pose_i, pose_j
+        double param_pose_i[7] = {prev_t.x(), prev_t.y(), prev_t.z(),
+                                  prev_q.x(), prev_q.y(), prev_q.z(),
+                                  prev_q.w()};
         double param_vel_i[3] = {0, 0, 0};
         double param_bias_i[6] = {0, 0, 0, 0, 0, 0};
 
-        // param j
-        double param_pose_j[7];
-        param_pose_j[0] = td.x();
-        param_pose_j[1] = td.y();
-        param_pose_j[2] = td.z();
-        param_pose_j[3] = qd.x();
-        param_pose_j[4] = qd.y();
-        param_pose_j[5] = qd.z();
-        param_pose_j[6] = qd.w();
-
+        double param_pose_j[7] = {td.x(), td.y(), td.z(), qd.x(),
+                                  qd.y(), qd.z(), qd.w()};
         double param_vel_j[3] = {0, 0, 0};
         double param_bias_j[6] = {0, 0, 0, 0, 0, 0};
 
-        // Build Ceres problem
+        // Build the Ceres problem
         ceres::Problem problem;
         problem.AddParameterBlock(param_pose_i, 7,
                                   new PoseLocalParameterization());
@@ -342,7 +323,7 @@ public:
         problem.AddParameterBlock(param_vel_j, 3);
         problem.AddParameterBlock(param_bias_j, 6);
 
-        // create IMU factor
+        // Create the IMU factor and add it to the problem
         PreintFactor *imu_factor = new PreintFactor(preint_imu);
         problem.AddResidualBlock(imu_factor, nullptr, param_pose_i, param_vel_i,
                                  param_bias_i, param_pose_j, param_vel_j,
@@ -355,22 +336,62 @@ public:
         ceres::Solve(opt, &problem, &summ);
         ROS_INFO_STREAM("IMU factor => " << summ.BriefReport());
 
-        // update prev pose
-        prev_t << param_pose_j[0], param_pose_j[1], param_pose_j[2];
-        prev_q = Eigen::Quaterniond(param_pose_j[6], param_pose_j[3],
-                                    param_pose_j[4], param_pose_j[5])
-                     .normalized();
+        // Retrieve optimized results
+        final_t << param_pose_j[0], param_pose_j[1], param_pose_j[2];
+        final_q = Eigen::Quaterniond(param_pose_j[6], param_pose_j[3],
+                                     param_pose_j[4], param_pose_j[5])
+                      .normalized();
 
         delete imu_factor;
       } else {
-        // no IMU => just set prev pose = ICP result
-        prev_t = td;
-        prev_q = qd;
+        // If no IMU data is available, just use the ICP result
+        final_t = td;
+        final_q = qd;
       }
 
-      if (preint_imu)
+      // Update the previous pose for the next iteration
+      prev_t = final_t;
+      prev_q = final_q;
+
+      if (preint_imu) {
         delete preint_imu;
-    }
+        preint_imu = nullptr;
+      }
+
+      // ----------------------------------------------------------------------
+      // **Publish** (A) pose and (B) aligned cloud **after** IMU optimization
+      {
+        // (A) Publish pose
+        geometry_msgs::PoseStamped ps;
+        ps.header.stamp = cloudStamp;
+        ps.header.frame_id = "map";
+        ps.pose.position.x = final_t.x();
+        ps.pose.position.y = final_t.y();
+        ps.pose.position.z = final_t.z();
+        ps.pose.orientation.x = final_q.x();
+        ps.pose.orientation.y = final_q.y();
+        ps.pose.orientation.z = final_q.z();
+        ps.pose.orientation.w = final_q.w();
+        relocPub.publish(ps);
+
+        // (B) Publish the aligned cloud using the final transformation
+        Eigen::Matrix4f finalTrans = Eigen::Matrix4f::Identity();
+        finalTrans.block<3, 3>(0, 0) = final_q.cast<float>().toRotationMatrix();
+        finalTrans.block<3, 1>(0, 3) = final_t.cast<float>();
+
+        pcl::PointCloud<PointXYZI>::Ptr alignedC(
+            new pcl::PointCloud<PointXYZI>());
+        pcl::transformPointCloud(*srcFiltered, *alignedC, finalTrans);
+
+        sensor_msgs::PointCloud2 pc2;
+        pcl::toROSMsg(*alignedC, pc2);
+        pc2.header.stamp = cloudStamp;
+        pc2.header.frame_id = "map";
+        alignedCloudPub.publish(pc2);
+      }
+
+    } // end while(running && ros::ok())
+
     ROS_INFO("liteloam %d exit", liteloam_id);
   }
 

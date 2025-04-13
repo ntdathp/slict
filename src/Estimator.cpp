@@ -1093,8 +1093,8 @@ public:
         {
             if(reloc_stat != RELOCALIZED)
             {
-                relocPub.publish(relocPose);
-                printf("Manual reloc pose published.\n");
+                // relocPub.publish(relocPose);
+                // printf("Manual reloc pose published.\n");
             }
             else
                 break;

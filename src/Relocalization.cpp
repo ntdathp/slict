@@ -94,7 +94,7 @@ public:
 
     // Publishers
     relocPub =
-        nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
+        nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
     alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>(
         "/liteloam_aligned_cloud", 1);
 
@@ -252,8 +252,8 @@ public:
       double best_fitness = 1e9;
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
 
-      // Scan +/- 20 degrees in yaw (step of 5) to find the best fitness
-      for (double d = -20; d <= 20; d += 5) {
+      // Scan +/- 90 degrees in yaw (step of 5) to find the best fitness
+      for (double d = -90; d <= 90; d += 5) {
         double yaw_f = yaw + d * M_PI / 180.0;
         Eigen::AngleAxisf yawA((float)yaw_f, Eigen::Vector3f::UnitZ());
         Eigen::Matrix3f Rg =
@@ -342,11 +342,15 @@ public:
                                      param_pose_j[4], param_pose_j[5])
                       .normalized();
 
-        delete imu_factor;
       } else {
         // If no IMU data is available, just use the ICP result
         final_t = td;
         final_q = qd;
+      }
+
+      if (!std::isfinite(final_t.x()) || !std::isfinite(final_q.w())) {
+        ROS_ERROR("Final pose has NaNs/Infs. Skipping publish!");
+        continue;
       }
 
       // Update the previous pose for the next iteration
@@ -587,7 +591,7 @@ public:
       std::lock_guard<std::mutex> lg(loam_mtx);
 
       // If we have fewer than 10 LITELOAM instances, create a new one
-      if (loamInstances.size() < 10) {
+      if (loamInstances.size() < 5) {
         int newID = loamInstances.size();
         auto newLoam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose,
                                                   newID, nh_ptr);

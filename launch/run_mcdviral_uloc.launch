@@ -13,7 +13,7 @@
 
       <!-- MCDVIRAL dataset, downloadable at mcdviral.github.io. -->
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
-      <arg name="data_path"       default="/home/dat/Downloads/data"/>
+      <arg name="data_path"       default="/home/dat/Downloads/data/MCDVIRAL"/>
 
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
@@ -97,7 +97,7 @@
       <arg name="config_file" value="$(find slict)/config/mcdviral_hhs.yaml" if="$(eval 'tuhh_' in bag_file)" />
 
       <!-- Priormap file -->
-      <arg name="prior_map_dir" default="/home/dat/Downloads/data/NTU"  if="$(eval 'ntu_'  in bag_file)" />
+      <arg name="prior_map_dir" default="/home/dat/Downloads/data/MCDVIRAL/NTU"  if="$(eval 'ntu_'  in bag_file)" />
       <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/KTH"  if="$(eval 'kth_'  in bag_file)" />
       <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/TUHH" if="$(eval 'tuhh_' in bag_file)" />
 
@@ -124,8 +124,9 @@
 
       <!-- Run the relocalization -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
-      <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
+      <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false">
       </node>
+
       <!-- Launch the SyncUWB node -->
       <node pkg="uloc" name="uwb_sync" type="uwb_sync" required="false" respawn="true" >
             <param name="use_sim_time" value="false"/>
@@ -135,15 +136,15 @@
             <param name="use_sim_time" value="false"/>
       </node>
       <!-- Launch the Reloc node -->
-      <node pkg="uloc" name="uwb_reloc" type="uloc_reloc.py" required="false" respawn="true"></node>
-      <remap from="/reloc_pose" to="/uwb_pose"/>
+      <!-- <node pkg="uloc" name="uwb_reloc" type="uloc_reloc.py" required="false" respawn="true"></node>
+      <remap from="/reloc_pose" to="/uwb_pose"/> -->
 
       <!-- Run the Estimator -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map"  type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false"/>
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
       <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"
             launch-prefix="gdb -ex run - -args"/> -->
 
@@ -151,8 +152,8 @@
       <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/>
 
       <!--- Run Rviz-->
-      <!-- <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
-            args="-d $(find slict)/launch/mcdviral.rviz" /> -->
+      <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
+            args="-d $(find slict)/launch/mcdviral.rviz" />
 
       <!-- An offset time -->
       <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>

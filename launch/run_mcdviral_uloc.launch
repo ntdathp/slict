@@ -17,9 +17,9 @@
 
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_06/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_09/*.bag"/> -->
@@ -124,7 +124,7 @@
 
       <!-- Run the relocalization -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
-      <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false">
+      <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
       </node>
 
       <!-- Launch the SyncUWB node -->
@@ -158,7 +158,7 @@
       <!-- An offset time -->
       <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>
       <arg name="start_time" value="1"  if="$(eval 'ntu_day_10' in bag_file)"/>
-      <arg name="start_time" value="0" if="$(eval 'ntu_day_10' not in bag_file)"/>
+      <arg name="start_time" value="0" if="$(eval 'ntu_day_02' not in bag_file and 'ntu_day_10' not in bag_file)"/>
 
       <!-- Play the bag file -->
       <param name="/use_sim_time" value="false" />

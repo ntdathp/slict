@@ -33,7 +33,8 @@ typedef sensor_msgs::PointCloud2::ConstPtr rosCloudMsgPtr;
 typedef sensor_msgs::PointCloud2 rosCloudMsg;
 typedef Sophus::SO3d SO3d;
 
-class LITELOAM {
+class LITELOAM
+{
 private:
   ros::NodeHandlePtr nh_ptr;
 
@@ -51,7 +52,7 @@ private:
   std::mutex cloud_mutex;
   std::mutex imu_mutex;
 
-  // Prior map + kdtree
+  // Prior map + KD-tree
   CloudXYZIPtr priorMap;
   KdFLANNPtr kdTreeMap;
 
@@ -59,83 +60,94 @@ private:
   std::thread processThread;
   bool running = true;
 
-  // Start time
+  // Time tracking
   double startTime;
 
-  // Initial pose
+  // Initial pose (stored in myTf)
   mytf initPose;
   int liteloam_id;
 
-  // Keep track of last cloud time
+  // Last cloud time to segment IMU data
   double last_cloud_time_ = -1.0;
 
-  // Pose from previous iteration => Pose_i
-  Eigen::Vector3d prev_t;
-  Eigen::Quaterniond prev_q;
+  // Use a single myTf for the previous pose
+  mytf prevPose;
 
 public:
   // Destructor
-  ~LITELOAM() {
+  ~LITELOAM()
+  {
     running = false;
     if (processThread.joinable())
       processThread.join();
-    ROS_WARN("liteloam %d destructed.", liteloam_id);
+    ROS_WARN("LITELOAM %d destructed.", liteloam_id);
   }
 
   // Constructor
-  LITELOAM(const CloudXYZIPtr &pm, const KdFLANNPtr &kdt, const mytf &initPose_,
-           int id, const ros::NodeHandlePtr &nh)
-      : priorMap(pm), kdTreeMap(kdt), initPose(initPose_), liteloam_id(id),
-        nh_ptr(nh) {
-    // Subscribe to /lastcloud and /vn100/imu
-    lidarCloudSub =
-        nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
-    imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
+  LITELOAM(const CloudXYZIPtr &pm,
+           const KdFLANNPtr &kdt,
+           const mytf &initPose_,
+           int id,
+           const ros::NodeHandlePtr &nh)
+      : priorMap(pm),
+        kdTreeMap(kdt),
+        initPose(initPose_),
+        liteloam_id(id),
+        nh_ptr(nh)
+  {
+    // Subscribe to LiDAR and IMU topics
+    lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
+    imuSub        = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
 
     // Publishers
-    relocPub =
-        nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
-    alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>(
-        "/liteloam_aligned_cloud", 1);
+    relocPub       = nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
+    alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
     startTime = ros::Time::now().toSec();
-    running = true;
+    running   = true;
     processThread = std::thread(&LITELOAM::processBuffer, this);
 
-    // Initialize prev pose from initPose
-    prev_t = initPose.pos;
-    prev_q = initPose.rot;
+    // Initialize previous pose from initPose
+    prevPose = initPose;
 
-    ROS_INFO_STREAM("[LITELOAM " << liteloam_id
-                                 << "] Constructed - thread started");
+    ROS_INFO_STREAM("[LITELOAM " << liteloam_id << "] Constructed - thread started");
   }
 
-  // Stop
-  void stop() { running = false; }
+  // Stop function
+  void stop()
+  {
+    running = false;
+  }
 
   // IMU callback
-  void IMUHandler(const sensor_msgs::ImuConstPtr &msg) {
+  void IMUHandler(const sensor_msgs::ImuConstPtr &msg)
+  {
     std::lock_guard<std::mutex> lock(imu_mutex);
     imu_queue.push_back(msg);
   }
 
-  // Lidar callback
-  void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg) {
+  // LiDAR callback
+  void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
+  {
     std::lock_guard<std::mutex> lock(cloud_mutex);
     CloudXYZIPtr newC(new CloudXYZI());
     pcl::fromROSMsg(*msg, *newC);
     cloud_queue.push_back(newC);
   }
 
-  void processBuffer() {
-    while (running && ros::ok()) {
-      // 1) Check if any cloud is in the queue
-      if (cloud_queue.empty()) {
+  // Main processing thread
+  void processBuffer()
+  {
+    while (running && ros::ok())
+    {
+      // 1) Check if the queue is empty
+      if (cloud_queue.empty())
+      {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         continue;
       }
 
-      // 2) Retrieve the next cloud from the queue
+      // 2) Pop the front cloud
       CloudXYZIPtr cloudToProcess;
       {
         std::lock_guard<std::mutex> lk(cloud_mutex);
@@ -143,23 +155,24 @@ public:
         cloud_queue.pop_front();
       }
 
-      // Convert timestamp from PCL header format to ros::Time
+      // Convert timestamp from PCL header to ros::Time
       uint64_t pcl_stamp = cloudToProcess->header.stamp;
       ros::Time cloudStamp(pcl_stamp / 1000000ULL,
                            (pcl_stamp % 1000000ULL) * 1000ULL);
       double currentCloudTime = cloudStamp.toSec();
 
-      // Keep track of the previous cloud’s time for IMU integration bounds
+      // Determine previous cloud time
       double prevCloudTime =
           (last_cloud_time_ < 0.0 ? currentCloudTime : last_cloud_time_);
       last_cloud_time_ = currentCloudTime;
 
-      // For demonstration, print when liteloam_id == 0
-      if (liteloam_id == 0) {
-        ROS_INFO("liteloam %d run=%.3f", liteloam_id, timeSinceStart());
+      // Print for demonstration if ID == 0
+      if (liteloam_id == 0)
+      {
+        ROS_INFO("LITELOAM %d run=%.3f", liteloam_id, timeSinceStart());
       }
 
-      // ----------------------------------------------------------------------
+      // ---------------------------------------------------------------------
       // (A) Downsample the input point cloud
       pcl::PointCloud<PointXYZI>::Ptr src(new pcl::PointCloud<PointXYZI>());
       pcl::copyPointCloud(*cloudToProcess, *src);
@@ -167,43 +180,48 @@ public:
       pcl::VoxelGrid<PointXYZI> vg;
       vg.setInputCloud(src);
       vg.setLeafSize(0.3f, 0.3f, 0.3f);
-      pcl::PointCloud<PointXYZI>::Ptr srcFiltered(
-          new pcl::PointCloud<PointXYZI>());
+      pcl::PointCloud<PointXYZI>::Ptr srcFiltered(new pcl::PointCloud<PointXYZI>());
       vg.filter(*srcFiltered);
 
-      // ----------------------------------------------------------------------
-      // (B) Collect IMU messages in the time window [prevCloudTime,
-      // currentCloudTime]
+      // ---------------------------------------------------------------------
+      // (B) Collect IMU messages in the time window [prevCloudTime, currentCloudTime]
       std::deque<sensor_msgs::ImuConstPtr> localIMU;
       {
         std::lock_guard<std::mutex> lk(imu_mutex);
-        while (!imu_queue.empty()) {
+        while (!imu_queue.empty())
+        {
           double t_imu = imu_queue.front()->header.stamp.toSec();
-          if (t_imu >= prevCloudTime && t_imu <= currentCloudTime) {
+          if (t_imu >= prevCloudTime && t_imu <= currentCloudTime)
+          {
             localIMU.push_back(imu_queue.front());
             imu_queue.pop_front();
-          } else if (t_imu < prevCloudTime) {
+          }
+          else if (t_imu < prevCloudTime)
+          {
             imu_queue.pop_front();
-          } else {
+          }
+          else
+          {
             break;
           }
         }
       }
 
-      // ----------------------------------------------------------------------
-      // (C) Create an IMU preintegration object if IMU data is available
+      // ---------------------------------------------------------------------
+      // (C) Create an IMU pre-integration object if IMU data is available
       PreintBase *preint_imu = nullptr;
-      if (!localIMU.empty()) {
-        // Example noise parameters (adjust them according to your sensor spec)
+      if (!localIMU.empty())
+      {
+        // Example noise parameters
         double ACC_N = 0.6, ACC_W = 0.08;
         double GYR_N = 0.05, GYR_W = 0.003;
         Eigen::Vector3d GRAV(0, 0, 9.81);
 
-        // Assume zero bias for demonstration (or retrieve from your system)
+        // Assume zero bias for demonstration
         Eigen::Vector3d initBa(0, 0, 0);
         Eigen::Vector3d initBg(0, 0, 0);
 
-        // Initialize the preintegration with the first IMU reading
+        // Use the first IMU measurement as reference
         Eigen::Vector3d firstAcc(localIMU.front()->linear_acceleration.x,
                                  localIMU.front()->linear_acceleration.y,
                                  localIMU.front()->linear_acceleration.z);
@@ -211,12 +229,17 @@ public:
                                  localIMU.front()->angular_velocity.y,
                                  localIMU.front()->angular_velocity.z);
 
-        preint_imu =
-            new PreintBase(firstAcc, firstGyr, initBa, initBg, true, ACC_N,
-                           ACC_W, GYR_N, GYR_W, GRAV, liteloam_id);
+        preint_imu = new PreintBase(firstAcc, firstGyr,
+                                    initBa, initBg,
+                                    true,
+                                    ACC_N, ACC_W,
+                                    GYR_N, GYR_W,
+                                    GRAV,
+                                    liteloam_id);
 
-        // Integrate the rest of the IMU measurements
-        for (size_t k = 1; k < localIMU.size(); k++) {
+        // Integrate subsequent IMU measurements
+        for (size_t k = 1; k < localIMU.size(); k++)
+        {
           double dt = localIMU[k]->header.stamp.toSec() -
                       localIMU[k - 1]->header.stamp.toSec();
 
@@ -231,8 +254,8 @@ public:
         }
       }
 
-      // ----------------------------------------------------------------------
-      // (D) Perform ICP using the downsampled cloud srcFiltered
+      // ---------------------------------------------------------------------
+      // (D) Perform ICP using the downsampled cloud
       pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp;
       icp.setInputSource(srcFiltered);
       icp.setInputTarget(priorMap);
@@ -241,163 +264,201 @@ public:
       icp.setTransformationEpsilon(1e-6);
       icp.setEuclideanFitnessEpsilon(1e-6);
 
-      // Use the previous quaternion to estimate an initial yaw
-      double roll, pitch, yaw;
-      {
-        tf::Matrix3x3 Rq(
-            tf::Quaternion(prev_q.x(), prev_q.y(), prev_q.z(), prev_q.w()));
-        Rq.getRPY(roll, pitch, yaw);
-      }
+      // Retrieve roll/pitch/yaw from prevPose (these are in degrees)
+      double roll_deg  = prevPose.roll();
+      double pitch_deg = prevPose.pitch();
+      double yaw_deg   = prevPose.yaw();
 
-      double best_fitness = 1e9;
+      // Convert to radians
+      double roll_rad  = roll_deg  * M_PI / 180.0;
+      double pitch_rad = pitch_deg * M_PI / 180.0;
+      double yaw_rad   = yaw_deg   * M_PI / 180.0;
+
+      double best_fitness = 2.0;
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
 
-      // Scan +/- 90 degrees in yaw (step of 5) to find the best fitness
-      for (double d = -90; d <= 90; d += 5) {
-        double yaw_f = yaw + d * M_PI / 180.0;
-        Eigen::AngleAxisf yawA((float)yaw_f, Eigen::Vector3f::UnitZ());
-        Eigen::Matrix3f Rg =
-            prev_q.cast<float>().toRotationMatrix() * yawA.toRotationMatrix();
-        Eigen::Vector3f Tg = prev_t.cast<float>();
+      // Scan +/- 90 degrees around the previous yaw, in steps of 5 degrees
+      for (double d = -90; d <= 90; d += 5)
+      {
+        double yaw_f = yaw_rad + d * M_PI / 180.0;
 
-        Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
-        guess.block<3, 3>(0, 0) = Rg;
-        guess.block<3, 1>(0, 3) = Tg;
+        // Build a guess rotation:
+        // prevPose.rot => quaternion, convert to float -> rotation matrix
+        Eigen::Matrix3f R_prev = prevPose.rot.cast<float>()
+                                               .normalized()
+                                               .toRotationMatrix();
+        Eigen::AngleAxisf deltaYaw((float)yaw_f, Eigen::Vector3f::UnitZ());
+        Eigen::Matrix3f R_guess = R_prev * deltaYaw.toRotationMatrix();
 
-        pcl::PointCloud<PointXYZI>::Ptr aligned(
-            new pcl::PointCloud<PointXYZI>());
-        icp.align(*aligned, guess);
+        // The translation guess is prevPose.pos (cast to float)
+        Eigen::Vector3f T_guess = prevPose.pos.cast<float>();
 
-        if (icp.hasConverged()) {
+        // Combine into a 4x4 guess
+        Eigen::Matrix4f guessMat = Eigen::Matrix4f::Identity();
+        guessMat.block<3, 3>(0, 0) = R_guess;
+        guessMat.block<3, 1>(0, 3) = T_guess;
+
+        pcl::PointCloud<PointXYZI>::Ptr aligned(new pcl::PointCloud<PointXYZI>());
+        icp.align(*aligned, guessMat);
+
+        if (icp.hasConverged())
+        {
           double fit = icp.getFitnessScore();
-          if (fit < best_fitness) {
+          if (fit < best_fitness)
+          {
             best_fitness = fit;
             bestTrans = icp.getFinalTransformation();
           }
         }
       }
 
-      // If ICP did not converge, skip this iteration
-      if (best_fitness >= 1e9) {
-        ROS_WARN("ICP not converge. best_fitness=%.3f", best_fitness);
-        if (preint_imu) {
+      // Check ICP result
+      if (best_fitness >= 2.0)
+      {
+        ROS_WARN("ICP did not converge. best_fitness=%.3f", best_fitness);
+        if (preint_imu)
           delete preint_imu;
-        }
         continue;
       }
 
-      // Convert bestTrans to a pose (td, qd)
-      Eigen::Matrix3f Rb = bestTrans.block<3, 3>(0, 0);
-      Eigen::Vector3f tb = bestTrans.block<3, 1>(0, 3);
-      Eigen::Quaternionf qb(Rb);
-      Eigen::Quaterniond qd(qb.w(), qb.x(), qb.y(), qb.z());
-      Eigen::Vector3d td(tb.x(), tb.y(), tb.z());
+      // Construct a mytf from bestTrans (which is float). Convert to double.
+      Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
+      mytf finalPose(bestTransD);
 
-      // ----------------------------------------------------------------------
-      // (E) Now incorporate IMU factor via ceres
-      Eigen::Vector3d final_t;
-      Eigen::Quaterniond final_q;
+      // ---------------------------------------------------------------------
+      // (E) Integrate IMU factor with Ceres if available
+      if (preint_imu)
+      {
+        // param i => from prevPose
+        double param_pose_i[7] = {
+            prevPose.pos.x(),
+            prevPose.pos.y(),
+            prevPose.pos.z(),
+            prevPose.rot.x(),
+            prevPose.rot.y(),
+            prevPose.rot.z(),
+            prevPose.rot.w()
+        };
+        double param_vel_i[3]   = {0, 0, 0};
+        double param_bias_i[6]  = {0, 0, 0, 0, 0, 0};
 
-      if (preint_imu) {
-        // Prepare parameter blocks for pose_i, pose_j
-        double param_pose_i[7] = {prev_t.x(), prev_t.y(), prev_t.z(),
-                                  prev_q.x(), prev_q.y(), prev_q.z(),
-                                  prev_q.w()};
-        double param_vel_i[3] = {0, 0, 0};
-        double param_bias_i[6] = {0, 0, 0, 0, 0, 0};
-
-        double param_pose_j[7] = {td.x(), td.y(), td.z(), qd.x(),
-                                  qd.y(), qd.z(), qd.w()};
-        double param_vel_j[3] = {0, 0, 0};
-        double param_bias_j[6] = {0, 0, 0, 0, 0, 0};
+        // param j => from finalPose
+        double param_pose_j[7] = {
+            finalPose.pos.x(),
+            finalPose.pos.y(),
+            finalPose.pos.z(),
+            finalPose.rot.x(),
+            finalPose.rot.y(),
+            finalPose.rot.z(),
+            finalPose.rot.w()
+        };
+        double param_vel_j[3]   = {0, 0, 0};
+        double param_bias_j[6]  = {0, 0, 0, 0, 0, 0};
 
         // Build the Ceres problem
         ceres::Problem problem;
-        problem.AddParameterBlock(param_pose_i, 7,
-                                  new PoseLocalParameterization());
+        problem.AddParameterBlock(param_pose_i, 7, new PoseLocalParameterization());
         problem.AddParameterBlock(param_vel_i, 3);
         problem.AddParameterBlock(param_bias_i, 6);
 
-        problem.AddParameterBlock(param_pose_j, 7,
-                                  new PoseLocalParameterization());
+        problem.AddParameterBlock(param_pose_j, 7, new PoseLocalParameterization());
         problem.AddParameterBlock(param_vel_j, 3);
         problem.AddParameterBlock(param_bias_j, 6);
 
         // Create the IMU factor and add it to the problem
         PreintFactor *imu_factor = new PreintFactor(preint_imu);
-        problem.AddResidualBlock(imu_factor, nullptr, param_pose_i, param_vel_i,
-                                 param_bias_i, param_pose_j, param_vel_j,
-                                 param_bias_j);
+        problem.AddResidualBlock(imu_factor, nullptr,
+                                 param_pose_i, param_vel_i, param_bias_i,
+                                 param_pose_j, param_vel_j, param_bias_j);
 
         // Solve
         ceres::Solver::Options opt;
         opt.minimizer_progress_to_stdout = true;
+
         ceres::Solver::Summary summ;
         ceres::Solve(opt, &problem, &summ);
         ROS_INFO_STREAM("IMU factor => " << summ.BriefReport());
 
-        // Retrieve optimized results
-        final_t << param_pose_j[0], param_pose_j[1], param_pose_j[2];
-        final_q = Eigen::Quaterniond(param_pose_j[6], param_pose_j[3],
-                                     param_pose_j[4], param_pose_j[5])
-                      .normalized();
+        // Retrieve the optimized pose for finalPose
+        finalPose.pos.x() = param_pose_j[0];
+        finalPose.pos.y() = param_pose_j[1];
+        finalPose.pos.z() = param_pose_j[2];
+        finalPose.rot =
+            Eigen::Quaterniond(param_pose_j[6],
+                               param_pose_j[3],
+                               param_pose_j[4],
+                               param_pose_j[5]).normalized();
 
-      } else {
-        // If no IMU data is available, just use the ICP result
-        final_t = td;
-        final_q = qd;
+        delete imu_factor;
       }
 
-      if (!std::isfinite(final_t.x()) || !std::isfinite(final_q.w())) {
-        ROS_ERROR("Final pose has NaNs/Infs. Skipping publish!");
+      // Check for NaNs or Infs
+      if (!std::isfinite(finalPose.pos.x()) || !std::isfinite(finalPose.rot.w()))
+      {
+        ROS_ERROR("Final pose contains NaN/Inf. Skipping publish.");
+        if (preint_imu)
+          delete preint_imu;
         continue;
       }
 
       // Update the previous pose for the next iteration
-      prev_t = final_t;
-      prev_q = final_q;
+      prevPose = finalPose;
 
-      if (preint_imu) {
+      // Clean up preint_imu
+      if (preint_imu)
+      {
         delete preint_imu;
         preint_imu = nullptr;
       }
 
-      // ----------------------------------------------------------------------
-      // **Publish** (A) pose and (B) aligned cloud **after** IMU optimization
+      // ---------------------------------------------------------------------
+      // Publish the final pose and the aligned cloud
       {
-        // (A) Publish pose
+        // (A) Publish final pose
         geometry_msgs::PoseStamped ps;
-        ps.header.stamp = cloudStamp;
+        ps.header.stamp    = cloudStamp;
         ps.header.frame_id = "map";
-        ps.pose.position.x = final_t.x();
-        ps.pose.position.y = final_t.y();
-        ps.pose.position.z = final_t.z();
-        ps.pose.orientation.x = final_q.x();
-        ps.pose.orientation.y = final_q.y();
-        ps.pose.orientation.z = final_q.z();
-        ps.pose.orientation.w = final_q.w();
+        ps.pose.position.x = finalPose.pos.x();
+        ps.pose.position.y = finalPose.pos.y();
+        ps.pose.position.z = finalPose.pos.z();
+        ps.pose.orientation.x = finalPose.rot.x();
+        ps.pose.orientation.y = finalPose.rot.y();
+        ps.pose.orientation.z = finalPose.rot.z();
+        ps.pose.orientation.w = finalPose.rot.w();
         relocPub.publish(ps);
 
-        // (B) Publish the aligned cloud using the final transformation
-        Eigen::Matrix4f finalTrans = Eigen::Matrix4f::Identity();
-        finalTrans.block<3, 3>(0, 0) = final_q.cast<float>().toRotationMatrix();
-        finalTrans.block<3, 1>(0, 3) = final_t.cast<float>();
+        // Print final pose (roll/pitch/yaw in degrees)
+        double roll_final  = finalPose.roll();
+        double pitch_final = finalPose.pitch();
+        double yaw_final   = finalPose.yaw();
+        ROS_INFO("LITELOAM final => T(%.3f, %.3f, %.3f), RPY(%.1f, %.1f, %.1f) deg",
+                 finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
+                 roll_final, pitch_final, yaw_final);
 
-        pcl::PointCloud<PointXYZI>::Ptr alignedC(
-            new pcl::PointCloud<PointXYZI>());
-        pcl::transformPointCloud(*srcFiltered, *alignedC, finalTrans);
+        // Print initial pose for reference
+        double iroll  = initPose.roll();
+        double ipitch = initPose.pitch();
+        double iyaw   = initPose.yaw();
+        ROS_INFO("InitPose => T(%.3f, %.3f, %.3f), RPY(%.1f, %.1f, %.1f) deg",
+                 initPose.pos.x(), initPose.pos.y(), initPose.pos.z(),
+                 iroll, ipitch, iyaw);
+
+        // (B) Publish the aligned cloud after applying the final transformation
+        Eigen::Matrix4f finalTransform = finalPose.tfMat().template cast<float>();
+        pcl::PointCloud<PointXYZI>::Ptr alignedC(new pcl::PointCloud<PointXYZI>());
+        pcl::transformPointCloud(*srcFiltered, *alignedC, finalTransform);
 
         sensor_msgs::PointCloud2 pc2;
         pcl::toROSMsg(*alignedC, pc2);
-        pc2.header.stamp = cloudStamp;
+        pc2.header.stamp    = cloudStamp;
         pc2.header.frame_id = "map";
         alignedCloudPub.publish(pc2);
       }
+    }
 
-    } // end while(running && ros::ok())
-
-    ROS_INFO("liteloam %d exit", liteloam_id);
+    ROS_INFO("LITELOAM %d exit", liteloam_id);
   }
+
 
   void Associate(const KdFLANNPtr &kdtreeMap, const CloudXYZIPtr &priormap,
                  const CloudXYZITPtr &cloudRaw, const CloudXYZIPtr &cloudInB,
@@ -591,7 +652,7 @@ public:
       std::lock_guard<std::mutex> lg(loam_mtx);
 
       // If we have fewer than 10 LITELOAM instances, create a new one
-      if (loamInstances.size() < 5) {
+      if (loamInstances.size() < 10) {
         int newID = loamInstances.size();
         auto newLoam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose,
                                                   newID, nh_ptr);

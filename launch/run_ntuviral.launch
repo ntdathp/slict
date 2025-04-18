@@ -5,7 +5,7 @@
       <arg name="loop_en" default="0"/>
 
       <!-- NTU VIRAL dataset . Downloadable at: https://ntu-aris.github.io/ntuviral_dataset -->
-      <arg name="data_path"       default="/media/tmn/mySataSSD21/DATASETS/NTU_VIRAL/DATA/"/>
+      <arg name="data_path"       default="/home/dat/Downloads/data/ntuviral/"/>
 
       <!-- <arg  name="bag_file" default="$(arg data_path)/eee_01/eee_01*.bag"/> -->
       <!-- <arg  name="bag_file" default="$(arg data_path)/eee_02/eee_02*.bag"/> -->
@@ -23,7 +23,7 @@
       <!-- <arg  name="bag_file" default="$(arg data_path)/rtp_02/rtp_02*.bag"/>   -->
       <!-- <arg  name="bag_file" default="$(arg data_path)/rtp_03/rtp_03*.bag"/>   -->
 
-      <arg  name="bag_file" default="$(arg data_path)/spms_01/spms_01*.bag"/>
+      <!-- <arg  name="bag_file" default="$(arg data_path)/spms_01/spms_01*.bag"/> -->
       <!-- <arg  name="bag_file" default="$(arg data_path)/spms_02/spms_02*.bag"/> -->
       <!-- <arg  name="bag_file" default="$(arg data_path)/spms_03/spms_03*.bag"/> -->
 
@@ -48,16 +48,24 @@
       <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
 
       <!--- Run Rviz-->
-      <node pkg="rviz" type="rviz" name="rviz" respawn="true" output="log"
-            args="-d $(find slict)/launch/ntuviral.rviz" />
+      <!-- <node pkg="rviz" type="rviz" name="rviz" respawn="true" output="log"
+            args="-d $(find slict)/launch/ntuviral.rviz" /> -->
 
       <!-- Play the bag file -->
       <param name="/use_sim_time" value="false" />
+            <arg name="bag_file" default="/path/to/bag.bag"/>
+            <arg name="odom_bag_path" default="$(eval '/'.join(arg('bag_file').split('/')[:-1]) + '/' + arg('bag_file').split('/')[-1].replace('.bag', '_opt_odom.bag'))"/>
+            <arg name="odom_bag_topic" default="/opt_odom"/>
 
       <node required="false" pkg="rosbag" type="play" name="rosbag_player"
             args="$(arg publish_clock) $(arg bag_file) -r 1.0 -s 0"
             launch-prefix="bash -c 'sleep 1; $0 $@' "/>
 
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
+      
+
+      <node pkg="rosbag" type="record" name="record_opt_odom" output="screen"
+      args="-O $(arg odom_bag_path) $(arg odom_bag_topic)"
+      launch-prefix="bash -c 'sleep 2; $0 $@' "/>
 
 </launch>

@@ -1,4 +1,4 @@
-#!bin/bash
+#!/usr/bin/env bash
 
 ROS_PKG=slict
 
@@ -16,7 +16,7 @@ echo $ROS_PKG DIR: $PACKAGE_DIR
 CAPTURE_SCREEN=false;
 LOG_DATA=true;
 
-DATASET_LOCATION=/media/$USER/mySataSSD21/DATASETS/NTU_VIRAL/DATA/
+DATASET_LOCATION=/home/dat/Downloads/data/ntuviral
 LAUNCH_FILE=run_ntuviral.launch
 
 # Find the available sequences
@@ -41,7 +41,7 @@ SEQUENCES=(
             $DATASET_LOCATION/sbs_03
           )
 
-EPOC_DIR=/media/$USER/mySataSSD21/DATASETS/NTU_VIRAL/Experiment/slict_30012024
+EPOC_DIR=/home/dat/Downloads/data/ntuviral/Experiment
 
 for n in {1..1}; do
 
@@ -57,7 +57,7 @@ for n in {1..1}; do
       ./run_one_bag.sh _LAUNCH_FILE=$LAUNCH_FILE \
                        _ROS_PKG=$ROS_PKG \
                        _ROSBAG_PATH="$seq/${seq_basename}_mod.bag" \
-                       _CAPTURE_SCREEN=$CAPTURE_SCREEN \
+                      #  _CAPTURE_SCREEN=$CAPTURE_SCREEN \
                        _LOG_DATA=$LOG_DATA \
                        _LOG_PATH="$EPOC_DIR_N/result_$seq_basename" \
                        _LOOP_EN=0 \

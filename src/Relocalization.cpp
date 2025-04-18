@@ -435,6 +435,9 @@ public:
                  finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
                  roll_final, pitch_final, yaw_final);
 
+        ROS_INFO("ICP best_fitness=%.3f \n", best_fitness); 
+
+                 
         // Print initial pose for reference
         double iroll  = initPose.roll();
         double ipitch = initPose.pitch();

@@ -73,6 +73,9 @@ private:
   // Use a single myTf for the previous pose
   mytf prevPose;
 
+  bool icp_done = false;
+  bool converged_ = false;
+
 public:
   // Destructor
   ~LITELOAM()
@@ -93,18 +96,20 @@ public:
         kdTreeMap(kdt),
         initPose(initPose_),
         liteloam_id(id),
-        nh_ptr(nh)
+        nh_ptr(nh),
+        icp_done(false),
+        converged_(false)
   {
     // Subscribe to LiDAR and IMU topics
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
-    imuSub        = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
+    imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
 
     // Publishers
-    relocPub       = nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
+    relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/reloc_pose", 100);
     alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
     startTime = ros::Time::now().toSec();
-    running   = true;
+    running = true;
     processThread = std::thread(&LITELOAM::processBuffer, this);
 
     // Initialize previous pose from initPose
@@ -265,60 +270,65 @@ public:
       icp.setEuclideanFitnessEpsilon(1e-6);
 
       // Retrieve roll/pitch/yaw from prevPose (these are in degrees)
-      double roll_deg  = prevPose.roll();
+      double roll_deg = prevPose.roll();
       double pitch_deg = prevPose.pitch();
-      double yaw_deg   = prevPose.yaw();
+      double yaw_deg = prevPose.yaw();
 
       // Convert to radians
-      double roll_rad  = roll_deg  * M_PI / 180.0;
+      double roll_rad = roll_deg * M_PI / 180.0;
       double pitch_rad = pitch_deg * M_PI / 180.0;
-      double yaw_rad   = yaw_deg   * M_PI / 180.0;
+      double yaw_rad = yaw_deg * M_PI / 180.0;
 
       double best_fitness = 2.0;
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
-
-      // Scan +/- 90 degrees around the previous yaw, in steps of 5 degrees
-      for (double d = -90; d <= 90; d += 5)
+      if (!icp_done)
       {
-        double yaw_f = yaw_rad + d * M_PI / 180.0;
 
-        // Build a guess rotation:
-        // prevPose.rot => quaternion, convert to float -> rotation matrix
-        Eigen::Matrix3f R_prev = prevPose.rot.cast<float>()
-                                               .normalized()
-                                               .toRotationMatrix();
-        Eigen::AngleAxisf deltaYaw((float)yaw_f, Eigen::Vector3f::UnitZ());
-        Eigen::Matrix3f R_guess = R_prev * deltaYaw.toRotationMatrix();
-
-        // The translation guess is prevPose.pos (cast to float)
-        Eigen::Vector3f T_guess = prevPose.pos.cast<float>();
-
-        // Combine into a 4x4 guess
-        Eigen::Matrix4f guessMat = Eigen::Matrix4f::Identity();
-        guessMat.block<3, 3>(0, 0) = R_guess;
-        guessMat.block<3, 1>(0, 3) = T_guess;
-
-        pcl::PointCloud<PointXYZI>::Ptr aligned(new pcl::PointCloud<PointXYZI>());
-        icp.align(*aligned, guessMat);
-
-        if (icp.hasConverged())
+        // Scan +/- 90 degrees around the previous yaw, in steps of 5 degrees
+        for (double d = -90; d <= 90; d += 5)
         {
-          double fit = icp.getFitnessScore();
-          if (fit < best_fitness)
+          double yaw_f = yaw_rad + d * M_PI / 180.0;
+
+          // Build a guess rotation:
+          // prevPose.rot => quaternion, convert to float -> rotation matrix
+          Eigen::Matrix3f R_prev = prevPose.rot.cast<float>()
+                                       .normalized()
+                                       .toRotationMatrix();
+          Eigen::AngleAxisf deltaYaw((float)yaw_f, Eigen::Vector3f::UnitZ());
+          Eigen::Matrix3f R_guess = R_prev * deltaYaw.toRotationMatrix();
+
+          // The translation guess is prevPose.pos (cast to float)
+          Eigen::Vector3f T_guess = prevPose.pos.cast<float>();
+
+          // Combine into a 4x4 guess
+          Eigen::Matrix4f guessMat = Eigen::Matrix4f::Identity();
+          guessMat.block<3, 3>(0, 0) = R_guess;
+          guessMat.block<3, 1>(0, 3) = T_guess;
+
+          pcl::PointCloud<PointXYZI>::Ptr aligned(new pcl::PointCloud<PointXYZI>());
+          icp.align(*aligned, guessMat);
+
+          if (icp.hasConverged())
           {
-            best_fitness = fit;
-            bestTrans = icp.getFinalTransformation();
+            double fit = icp.getFitnessScore();
+            if (fit < best_fitness)
+            {
+              best_fitness = fit;
+              bestTrans = icp.getFinalTransformation();
+            }
           }
         }
-      }
 
-      // Check ICP result
-      if (best_fitness >= 2.0)
-      {
-        ROS_WARN("ICP did not converge. best_fitness=%.3f", best_fitness);
-        if (preint_imu)
-          delete preint_imu;
-        continue;
+        // Check ICP result
+        if (best_fitness >= 2.0)
+        {
+          ROS_WARN("ICP did not converge. best_fitness=%.3f", best_fitness);
+          if (preint_imu)
+            delete preint_imu;
+          continue;
+        }
+
+        icp_done = true;
       }
 
       // Construct a mytf from bestTrans (which is float). Convert to double.
@@ -337,10 +347,9 @@ public:
             prevPose.rot.x(),
             prevPose.rot.y(),
             prevPose.rot.z(),
-            prevPose.rot.w()
-        };
-        double param_vel_i[3]   = {0, 0, 0};
-        double param_bias_i[6]  = {0, 0, 0, 0, 0, 0};
+            prevPose.rot.w()};
+        double param_vel_i[3] = {0, 0, 0};
+        double param_bias_i[6] = {0, 0, 0, 0, 0, 0};
 
         // param j => from finalPose
         double param_pose_j[7] = {
@@ -350,10 +359,9 @@ public:
             finalPose.rot.x(),
             finalPose.rot.y(),
             finalPose.rot.z(),
-            finalPose.rot.w()
-        };
-        double param_vel_j[3]   = {0, 0, 0};
-        double param_bias_j[6]  = {0, 0, 0, 0, 0, 0};
+            finalPose.rot.w()};
+        double param_vel_j[3] = {0, 0, 0};
+        double param_bias_j[6] = {0, 0, 0, 0, 0, 0};
 
         // Build the Ceres problem
         ceres::Problem problem;
@@ -387,7 +395,8 @@ public:
             Eigen::Quaterniond(param_pose_j[6],
                                param_pose_j[3],
                                param_pose_j[4],
-                               param_pose_j[5]).normalized();
+                               param_pose_j[5])
+                .normalized();
 
         delete imu_factor;
       }
@@ -416,7 +425,7 @@ public:
       {
         // (A) Publish final pose
         geometry_msgs::PoseStamped ps;
-        ps.header.stamp    = cloudStamp;
+        ps.header.stamp = cloudStamp;
         ps.header.frame_id = "map";
         ps.pose.position.x = finalPose.pos.x();
         ps.pose.position.y = finalPose.pos.y();
@@ -428,20 +437,19 @@ public:
         relocPub.publish(ps);
 
         // Print final pose (roll/pitch/yaw in degrees)
-        double roll_final  = finalPose.roll();
+        double roll_final = finalPose.roll();
         double pitch_final = finalPose.pitch();
-        double yaw_final   = finalPose.yaw();
+        double yaw_final = finalPose.yaw();
         ROS_INFO("LITELOAM final => T(%.3f, %.3f, %.3f), RPY(%.1f, %.1f, %.1f) deg",
                  finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
                  roll_final, pitch_final, yaw_final);
 
-        ROS_INFO("ICP best_fitness=%.3f \n", best_fitness); 
+        ROS_INFO("ICP best_fitness=%.3f \n", best_fitness);
 
-                 
         // Print initial pose for reference
-        double iroll  = initPose.roll();
+        double iroll = initPose.roll();
         double ipitch = initPose.pitch();
-        double iyaw   = initPose.yaw();
+        double iyaw = initPose.yaw();
         ROS_INFO("InitPose => T(%.3f, %.3f, %.3f), RPY(%.1f, %.1f, %.1f) deg",
                  initPose.pos.x(), initPose.pos.y(), initPose.pos.z(),
                  iroll, ipitch, iyaw);
@@ -453,19 +461,21 @@ public:
 
         sensor_msgs::PointCloud2 pc2;
         pcl::toROSMsg(*alignedC, pc2);
-        pc2.header.stamp    = cloudStamp;
+        pc2.header.stamp = cloudStamp;
         pc2.header.frame_id = "map";
         alignedCloudPub.publish(pc2);
+
+        converged_ = true;
       }
     }
 
     ROS_INFO("LITELOAM %d exit", liteloam_id);
   }
 
-
   void Associate(const KdFLANNPtr &kdtreeMap, const CloudXYZIPtr &priormap,
                  const CloudXYZITPtr &cloudRaw, const CloudXYZIPtr &cloudInB,
-                 const CloudXYZIPtr &cloudInW, vector<LidarCoef> &Coef) {
+                 const CloudXYZIPtr &cloudInW, vector<LidarCoef> &Coef)
+  {
     ROS_ASSERT_MSG(cloudRaw->size() == cloudInB->size(),
                    "cloudRaw: %d. cloudInB: %d", cloudRaw->size(),
                    cloudInB->size());
@@ -474,13 +484,15 @@ public:
     double minKnnSqDis = 0.5 * 0.5;
     double min_planarity = 0.2, max_plane_dis = 0.3;
 
-    if (priormap->size() > knnSize) {
+    if (priormap->size() > knnSize)
+    {
       int pointsCount = cloudInW->points.size();
       vector<LidarCoef> Coef_;
       Coef_.resize(pointsCount);
 
 #pragma omp parallel for num_threads(MAX_THREADS)
-      for (int pidx = 0; pidx < pointsCount; pidx++) {
+      for (int pidx = 0; pidx < pointsCount; pidx++)
+      {
         double tpoint = cloudRaw->points[pidx].t;
         PointXYZIT pointRaw = cloudRaw->points[pidx];
         PointXYZI pointInB = cloudInB->points[pidx];
@@ -489,7 +501,8 @@ public:
         Coef_[pidx].n = Vector4d(0, 0, 0, 0);
         Coef_[pidx].t = -1;
 
-        if (!Util::PointIsValid(pointInB)) {
+        if (!Util::PointIsValid(pointInB))
+        {
           pointInB.x = 0;
           pointInB.y = 0;
           pointInB.z = 0;
@@ -516,7 +529,8 @@ public:
 
         // Fit the plane
         if (Util::fitPlane(nbrPoints, min_planarity, max_plane_dis,
-                           Coef_[pidx].n, Coef_[pidx].plnrty)) {
+                           Coef_[pidx].n, Coef_[pidx].plnrty))
+        {
           // ROS_ASSERT(tpoint >= 0);
           Coef_[pidx].t = tpoint;
           Coef_[pidx].f = Vector3d(pointRaw.x, pointRaw.y, pointRaw.z);
@@ -528,9 +542,11 @@ public:
       // Copy the coefficients to the buffer
       Coef.clear();
       int totalFeature = 0;
-      for (int pidx = 0; pidx < pointsCount; pidx++) {
+      for (int pidx = 0; pidx < pointsCount; pidx++)
+      {
         LidarCoef &coef = Coef_[pidx];
-        if (coef.t >= 0) {
+        if (coef.t >= 0)
+        {
           Coef.push_back(coef);
           Coef.back().ptIdx = totalFeature;
           totalFeature++;
@@ -541,7 +557,7 @@ public:
 
   double timeSinceStart() const { return ros::Time::now().toSec() - startTime; }
 
-  bool loamConverged() const { return false; }
+  bool loamConverged() const { return converged_; }
   bool isRunning() const { return running; }
   int getID() const { return liteloam_id; }
 };
@@ -549,7 +565,8 @@ public:
 //====================================================================
 // Class Relocalization
 //====================================================================
-class Relocalization {
+class Relocalization
+{
 private:
   ros::NodeHandlePtr nh_ptr;
 
@@ -571,18 +588,22 @@ private:
 public:
   ~Relocalization() {}
 
-  Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_) {
+  Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
+  {
     Initialize();
     checkLoamThread = std::thread(&Relocalization::CheckLiteLoams, this);
   }
 
-  void CheckLiteLoams() {
-    while (ros::ok()) {
+  void CheckLiteLoams()
+  {
+    while (ros::ok())
+    {
       {
         std::lock_guard<std::mutex> lg(loam_mtx);
 
         // Iterate through all LITELOAM instances
-        for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx) {
+        for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx)
+        {
           auto &loam = loamInstances[lidx];
           if (!loam)
             continue;
@@ -590,11 +611,14 @@ public:
           // If one instance has been running too long but not converged,
           // restart
           if (loam->timeSinceStart() > 10 && !loam->loamConverged() &&
-              loam->isRunning()) {
+              loam->isRunning())
+          {
             ROS_INFO("[Relocalization] LITELOAM %d exceeded 10s. Restart...",
                      loam->getID());
             loam->stop();
-          } else if (loam->loamConverged()) {
+          }
+          else if (loam->loamConverged())
+          {
             // do something else
           }
         }
@@ -603,7 +627,8 @@ public:
     }
   }
 
-  void Initialize() {
+  void Initialize()
+  {
     // ULOC pose subcriber
     ulocSub =
         nh_ptr->subscribe("/uwb_pose", 10, &Relocalization::ULOCCallback, this);
@@ -644,8 +669,10 @@ public:
     ROS_INFO("Prior Map Load Completed \n");
   }
 
-  void ULOCCallback(const geometry_msgs::PoseStamped::ConstPtr &msg) {
-    if (!priorMapReady) {
+  void ULOCCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+  {
+    if (!priorMapReady)
+    {
       ROS_WARN("[Relocalization] Prior map is not ready.");
       return;
     }
@@ -655,7 +682,8 @@ public:
       std::lock_guard<std::mutex> lg(loam_mtx);
 
       // If we have fewer than 10 LITELOAM instances, create a new one
-      if (loamInstances.size() < 10) {
+      if (loamInstances.size() < 10)
+      {
         int newID = loamInstances.size();
         auto newLoam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose,
                                                   newID, nh_ptr);
@@ -666,9 +694,11 @@ public:
       }
 
       // If an existing instance is not running, restart it with the same ID
-      for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx) {
+      for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx)
+      {
         auto &loam = loamInstances[lidx];
-        if (!loam->isRunning()) {
+        if (!loam->isRunning())
+        {
           loam = std::make_shared<LITELOAM>(priorMap, kdTreeMap, pose,
                                             loam->getID(), nh_ptr);
           ROS_INFO("[Relocalization] LITELOAM %d restarted.", loam->getID());
@@ -682,7 +712,8 @@ public:
 //====================================================================
 // main
 //====================================================================
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
   ros::init(argc, argv, "relocalization");
   ros::NodeHandle nh("~");
   ros::NodeHandlePtr nh_ptr = boost::make_shared<ros::NodeHandle>(nh);

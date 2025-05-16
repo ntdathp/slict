@@ -97,7 +97,7 @@
       <arg name="config_file" value="$(find slict)/config/mcdviral_hhs.yaml" if="$(eval 'tuhh_' in bag_file)" />
 
       <!-- Priormap file -->
-      <arg name="prior_map_dir" default="/home/dat/Downloads/data/MCDVIRAL/NTU"  if="$(eval 'ntu_'  in bag_file)" />
+      <arg name="prior_map_dir" default="/home/dat/Downloads/data/MCDVIRAL/PriorMaps/NTU"  if="$(eval 'ntu_'  in bag_file)" />
       <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/KTH"  if="$(eval 'kth_'  in bag_file)" />
       <arg name="prior_map_dir" default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PriorMapPublish/TUHH" if="$(eval 'tuhh_' in bag_file)" />
 
@@ -125,6 +125,7 @@
       <!-- Run the relocalization -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
+      <remap from="/liteloam_pose" to="/reloc_pose"/> 
       </node>
 
       <!-- Launch the SyncUWB node -->
@@ -152,8 +153,8 @@
       <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/>
 
       <!--- Run Rviz-->
-      <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
-            args="-d $(find slict)/launch/mcdviral.rviz" />
+      <!-- <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
+            args="-d $(find slict)/launch/mcdviral.rviz" /> -->
 
       <!-- An offset time -->
       <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>

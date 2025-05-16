@@ -74,10 +74,11 @@ private:
   std::unique_ptr<PreintBase> imuPreint;
 
   // ICP params
-  float  fineLeaf     = 0.3f;
-  float  coarseLeaf   = 0.6f;
-  double fineMaxCorr  = 20.0;
-  double coarseMaxCorr= 40.0;
+  float  fineLeaf      = 0.3f;
+  float  coarseLeaf    = 0.6f;
+  double fineMaxCorr   = 10.0;
+  double coarseMaxCorr = 40.0;
+  double fitnessThresh = 4.0;
 
   bool converged_ = false;
 
@@ -97,18 +98,18 @@ public:
   {
     kdTreeMap->setInputCloud(priorMap);
 
-    lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100,
-                                      &LITELOAM::PCHandler, this);
-    imuSub        = nh_ptr->subscribe("/vn100/imu", 500,
-                                      &LITELOAM::IMUHandler, this);
-    relocPub      = nh_ptr->advertise<geometry_msgs::PoseStamped>(
-                      "/liteloam_pose", 100);
+    lidarCloudSub   = nh_ptr->subscribe("/lastcloud", 100,
+                                        &LITELOAM::PCHandler, this);
+    imuSub          = nh_ptr->subscribe("/vn100/imu", 500,
+                                        &LITELOAM::IMUHandler, this);
+    relocPub        = nh_ptr->advertise<geometry_msgs::PoseStamped>(
+                        "/liteloam_pose", 100);
     alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>(
-                      "/liteloam_aligned_cloud", 1);
+                        "/liteloam_aligned_cloud", 1);
 
-    startTime = ros::Time::now().toSec();
-    running   = true;
-    processThread = std::thread(&LITELOAM::processBuffer, this);
+    startTime       = ros::Time::now().toSec();
+    running         = true;
+    processThread   = std::thread(&LITELOAM::processBuffer, this);
 
     ROS_INFO_STREAM("[LITELOAM " << liteloam_id << "] Constructed");
   }
@@ -169,7 +170,7 @@ private:
       uint64_t stamp = raw->header.stamp;
       ros::Time cloudTime(stamp/1000000ULL,
                           (stamp%1000000ULL)*1000ULL);
-      double tNow = cloudTime.toSec();
+      double tNow  = cloudTime.toSec();
       double tPrev = (last_cloud_time < 0.0 ? tNow : last_cloud_time);
       last_cloud_time = tNow;
       double dt = tNow - tPrev;
@@ -210,13 +211,18 @@ private:
         if (!imuPreint)
         {
           imuPreint.reset(new PreintBase(
-            a0,g0, ba,bg,
-            true, 0.6,0.08, 0.05,0.003,
-            Eigen::Vector3d(0,0,9.81), liteloam_id));
+            a0, g0, ba, bg,
+            true, 0.6, 0.08,
+            0.05, 0.003,
+            Eigen::Vector3d(0,0,9.81),
+            liteloam_id));
         }
-        else imuPreint->repropagate(ba,bg);
+        else
+        {
+          imuPreint->repropagate(ba, bg);
+        }
 
-        for (size_t i=1; i<imuBuf.size(); ++i)
+        for (size_t i = 1; i < imuBuf.size(); ++i)
         {
           double dti = imuBuf[i]->header.stamp.toSec()
                      - imuBuf[i-1]->header.stamp.toSec();
@@ -230,8 +236,9 @@ private:
         }
       }
 
-      // 7) ICP against priorMap
-      Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
+      // 7) ICP against priorMap with fitness threshold
+      Eigen::Matrix4f bestTrans   = Eigen::Matrix4f::Identity();
+      double         bestFitness = std::numeric_limits<double>::infinity();
 
       if (firstScan)
       {
@@ -243,30 +250,40 @@ private:
         icp.setTransformationEpsilon(1e-6);
         icp.setEuclideanFitnessEpsilon(1e-6);
 
-        double bestFit = std::numeric_limits<double>::infinity();
-        double yaw0 = prevPose.yaw()*M_PI/180.0;
+        double yaw0 = prevPose.yaw() * M_PI/180.0;
         Eigen::Matrix3f R0 = prevPose.rot.cast<float>()
                                  .normalized()
                                  .toRotationMatrix();
         Eigen::Vector3f T0 = prevPose.pos.cast<float>();
 
-        for (double d=-90; d<=90; d+=5)
+        for (double d = -90; d <= 90; d += 5)
         {
-          double yaw = yaw0 + d*M_PI/180.0;
+          double yaw = yaw0 + d * M_PI/180.0;
           Eigen::AngleAxisf rz((float)yaw, Eigen::Vector3f::UnitZ());
           Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
-          guess.block<3,3>(0,0) = R0*rz.toRotationMatrix();
+          guess.block<3,3>(0,0) = R0 * rz.toRotationMatrix();
           guess.block<3,1>(0,3) = T0;
 
           pcl::PointCloud<PointXYZI> aligned;
           icp.align(aligned, guess);
-          if (icp.hasConverged() && icp.getFitnessScore()<bestFit)
+          if (icp.hasConverged())
           {
-            bestFit   = icp.getFitnessScore();
-            bestTrans = icp.getFinalTransformation();
+            double fit = icp.getFitnessScore();
+            if (fit < bestFitness)
+            {
+              bestFitness = fit;
+              bestTrans   = icp.getFinalTransformation();
+            }
           }
         }
+
         firstScan = false;
+        if (bestFitness >= fitnessThresh)
+        {
+          ROS_WARN("[LITELOAM %d] first scan ICP fitness=%.3f >=%.1f skip",
+                   liteloam_id, bestFitness, fitnessThresh);
+          continue;
+        }
       }
       else
       {
@@ -279,7 +296,7 @@ private:
           vg.filter(*srcCoarse);
         }
 
-        // coarse
+        // coarse pass
         pcl::IterativeClosestPoint<PointXYZI,PointXYZI> icp1;
         icp1.setInputSource(srcCoarse);
         icp1.setInputTarget(priorMap);
@@ -289,7 +306,7 @@ private:
         icp1.align(*srcCoarse, guess);
         Eigen::Matrix4f coarseT = icp1.getFinalTransformation();
 
-        // fine
+        // fine pass
         pcl::IterativeClosestPoint<PointXYZI,PointXYZI> icp2;
         icp2.setInputSource(srcFine);
         icp2.setInputTarget(priorMap);
@@ -297,11 +314,22 @@ private:
         icp2.setMaximumIterations(10);
         pcl::PointCloud<PointXYZI> alignedFine;
         icp2.align(alignedFine, coarseT);
-        bestTrans = icp2.getFinalTransformation();
+        if (icp2.hasConverged())
+        {
+          bestFitness = icp2.getFitnessScore();
+          bestTrans   = icp2.getFinalTransformation();
+        }
+
+        if (bestFitness >= fitnessThresh)
+        {
+          ROS_WARN("[LITELOAM %d] ICP fitness=%.3f >=%.1f skip",
+                   liteloam_id, bestFitness, fitnessThresh);
+          continue;
+        }
       }
 
       // 8) Build pose & refine with IMU factor
-      Eigen::Matrix4d bestTransD = bestTrans.cast<double>();  // now this is a real Matrix4d
+      Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
       mytf finalPose(bestTransD);
 
       if (imuPreint)
@@ -328,7 +356,7 @@ private:
         problem.AddParameterBlock(baj,6);
         problem.AddResidualBlock(
           new PreintFactor(imuPreint.get()),
-          nullptr, pi,vi,bai, pj,vj,baj
+          nullptr, pi, vi, bai, pj, vj, baj
         );
 
         ceres::Solver::Options opts;
@@ -339,9 +367,9 @@ private:
         finalPose.pos.x() = pj[0];
         finalPose.pos.y() = pj[1];
         finalPose.pos.z() = pj[2];
-        finalPose.rot = Eigen::Quaterniond(
-          pj[6], pj[3], pj[4], pj[5]
-        ).normalized();
+        finalPose.rot     = Eigen::Quaterniond(
+                              pj[6], pj[3], pj[4], pj[5]
+                            ).normalized();
       }
 
       // 9) Publish

@@ -120,37 +120,42 @@
       </node>
 
       <!-- Run the sensor sync -->
-      <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/>
+      <!-- <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/> -->
 
       <!-- Run the relocalization -->
-      <!-- <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
+      <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
-      <remap from="/liteloam_pose" to="/reloc_pose"/> 
-      </node> -->
+        <param name="fine_leaf"           value="0.2" />
+        <param name="coarse_leaf"         value="0.4" />
+        <param name="fine_max_corr"       value="20.0" />
+        <param name="coarse_max_corr"     value="40.0" />
+        <param name="fitness_thresh"      value="6.0" />
+        <param name="fitness_thresh_after" value="4.0" />
+      </node>
 
       <!-- Launch the SyncUWB node -->
-      <!-- <node pkg="uloc" name="uwb_sync" type="uwb_sync" required="false" respawn="true" >
+      <node pkg="uloc" name="uwb_sync" type="uwb_sync" required="false" respawn="true" >
             <param name="use_sim_time" value="false"/>
-      </node> -->
+      </node>
       <!-- Launch the ModelUWB node -->
-      <!-- <node pkg="uloc" name="uloc_model" type="uloc_model.py" required="false" respawn="true">
+      <node pkg="uloc" name="uloc_model" type="uloc_model.py" required="false" respawn="true">
             <param name="use_sim_time" value="false"/>
-      </node> -->
+      </node>
       <!-- Launch the Reloc node -->
       <!-- <node pkg="uloc" name="uwb_reloc" type="uloc_reloc.py" required="false" respawn="true"></node>
       <remap from="/reloc_pose" to="/uwb_pose"/> -->
 
       <!-- Run the Estimator -->
-      <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
+      <!-- <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map"  type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
       <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"
             launch-prefix="gdb -ex run - -args"/> -->
 
       <!-- Run the imu predictor -->
-      <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/>
+      <!-- <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/> -->
 
       <!--- Run Rviz-->
       <!-- <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"

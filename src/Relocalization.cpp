@@ -72,10 +72,10 @@ private:
   std::unique_ptr<PreintBase> imuPreint;
 
   // ICP params
-  float fineLeaf = 0.3f;
-  float coarseLeaf = 0.6f;
-  double fineMaxCorr = 20.0;
-  double coarseMaxCorr = 40.0;
+  float fineLeaf = 0.1f;
+  float coarseLeaf = 0.2f;
+  double fineMaxCorr = 10.0;
+  double coarseMaxCorr = 30.0;
   double fitnessThresh = 4.0;
   double fitnessThreshAfter = 2.0;
 
@@ -95,13 +95,27 @@ public:
         initPose(initP),
         prevPose(initP),
         liteloam_id(id),
+        fineLeaf(0.1f),
+        coarseLeaf(0.2f),
+        fineMaxCorr(10.0),
+        coarseMaxCorr(30.0),
+        fitnessThresh(4.0),
+        fitnessThreshAfter(2.0),
+        converged_(false),
         first_cloud_(true)
   {
-    kdTreeMap->setInputCloud(priorMap);
+    ros::NodeHandle pnh("~");  // private handle
+    pnh.param("fine_leaf",          fineLeaf,          fineLeaf);
+    pnh.param("coarse_leaf",        coarseLeaf,        coarseLeaf);
+    pnh.param("fine_max_corr",      fineMaxCorr,       fineMaxCorr);
+    pnh.param("coarse_max_corr",    coarseMaxCorr,     coarseMaxCorr);
+    pnh.param("fitness_thresh",     fitnessThresh,     fitnessThresh);
+    pnh.param("fitness_thresh_after", fitnessThreshAfter, fitnessThreshAfter);
 
+
+    kdTreeMap->setInputCloud(priorMap);
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
     imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
-
     relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
     alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
@@ -245,6 +259,28 @@ private:
         }
       }
 
+      // --- 6.5) Predict initial pose using IMU pre‑integration ---
+      mytf predPose = prevPose;
+      if (imuPreint)
+      {
+        // Retrieve integrated IMU deltas: translation (dp), velocity (dv), rotation (dq)
+        Eigen::Vector3d dp, dv;
+        Eigen::Quaterniond dq;
+        imuPreint->getPredictedDeltas(
+            dp,                       // integrated position change
+            dv,                       // integrated velocity change (unused here)
+            dq,                       // integrated orientation change
+            prevPose.rot,             // initial orientation Qi
+            Eigen::Vector3d::Zero(),  // initial velocity Vi (zero if not tracked)
+            imuPreint->linearized_ba, // bias for accelerometer
+            imuPreint->linearized_bg  // bias for gyroscope
+        );
+
+        // Apply the delta to previous pose to get the predicted pose
+        predPose.pos = prevPose.pos + (prevPose.rot * dp);
+        predPose.rot = (prevPose.rot * dq).normalized();
+      }
+
       // 7) ICP against priorMap
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
       double bestFitness = std::numeric_limits<double>::infinity();
@@ -259,19 +295,19 @@ private:
       }
 
       // Base pose
-      double yaw0 = prevPose.yaw() * M_PI / 180.0;
-      Eigen::Matrix3f R0 = prevPose.rot.cast<float>().normalized().toRotationMatrix();
-      Eigen::Vector3f T0 = prevPose.pos.cast<float>();
+      double yaw0 = predPose.yaw() * M_PI / 180.0;
+      Eigen::Matrix3f R0 = predPose.rot.cast<float>().toRotationMatrix();
+      Eigen::Vector3f T0 = predPose.pos.cast<float>();
 
       std::vector<double> yaw_offsets;
       if (first_cloud_)
       {
-        for (double d = 0.0; d < 360.0; d += 10.0)
+        for (double d = 0; d < 360; d += 30.0)
           yaw_offsets.push_back(d);
       }
       else
       {
-        for (double d = -20.0; d <= 20.0; d += 5.0)
+        for (double d = -10; d < 10; d += 5.0)
           yaw_offsets.push_back(d);
       }
 
@@ -321,29 +357,14 @@ private:
         ROS_WARN("[LITELOAM %d] ICP fitness=%.3f >= %.1f skip",
                  liteloam_id, bestFitness, thresh);
         converged_ = false;
-        first_cloud_ = false;
         continue;
       }
+
+      first_cloud_ = false;
 
       // 8) Build pose & refine with IMU factor
       Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
       mytf finalPose(bestTransD);
-
-      {
-        double fx = finalPose.pos.x();
-        double fy = finalPose.pos.y();
-        double fz = finalPose.pos.z();
-
-        double froll = finalPose.roll();
-        double fpitch = finalPose.pitch();
-        double fyaw = finalPose.yaw();
-        ROS_INFO(
-            "\033[1;32m[LITELOAM %d] ICPed pose \n"
-            "pos(% .3f, % .3f, % .3f),\n"
-            "RPY(% .2f, % .2f, % .2f) \033[0m",
-            liteloam_id,
-            fx, fy, fz, froll, fpitch, fyaw);
-      }
 
       if (imuPreint)
       {
@@ -437,6 +458,7 @@ private:
       }
 
       // 10) update
+      imuPreint.reset(nullptr);
       prevPose = finalPose;
       converged_ = true;
     }
@@ -485,15 +507,18 @@ private:
   const double BUFFER_TIMEOUT_SEC = 30.0;
 
 public:
-  ~Relocalization() {}
-
-  Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
+  ~Relocalization()
   {
-    Initialize();
     if (checkLoamThread.joinable())
       checkLoamThread.join();
     if (bufferWatcherThread.joinable())
       bufferWatcherThread.join();
+  }
+
+  Relocalization(ros::NodeHandlePtr &nh_ptr_) : nh_ptr(nh_ptr_)
+  {
+    Initialize();
+    checkLoamThread = std::thread(&Relocalization::CheckLiteLoams, this);
   }
 
   void CheckLiteLoams()
@@ -512,10 +537,10 @@ public:
 
           // If one instance has been running too long but not converged,
           // restart
-          if (loam->timeSinceStart() > 20.0 && !loam->loamConverged() &&
+          if (loam->timeSinceStart() > 12.0 && !loam->loamConverged() &&
               loam->isRunning())
           {
-            ROS_INFO("[Relocalization] LITELOAM %d exceeded 20s. Restart...",
+            ROS_INFO("[Relocalization] LITELOAM %d exceeded 12s. Restart...",
                      loam->getID());
             loam->stop();
           }
@@ -670,7 +695,7 @@ public:
       std::lock_guard<std::mutex> lg(loam_mtx);
 
       // If fewer than x instances exist, create a fresh one
-      if (loamInstances.size() < 3)
+      if (loamInstances.size() < 5)
       {
         int newID = loamInstances.size();
         auto inst = std::make_shared<LITELOAM>(

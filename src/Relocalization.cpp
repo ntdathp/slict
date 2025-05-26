@@ -104,14 +104,13 @@ public:
         converged_(false),
         first_cloud_(true)
   {
-    ros::NodeHandle pnh("~");  // private handle
-    pnh.param("fine_leaf",          fineLeaf,          fineLeaf);
-    pnh.param("coarse_leaf",        coarseLeaf,        coarseLeaf);
-    pnh.param("fine_max_corr",      fineMaxCorr,       fineMaxCorr);
-    pnh.param("coarse_max_corr",    coarseMaxCorr,     coarseMaxCorr);
-    pnh.param("fitness_thresh",     fitnessThresh,     fitnessThresh);
+    ros::NodeHandle pnh("~"); // private handle
+    pnh.param("fine_leaf", fineLeaf, fineLeaf);
+    pnh.param("coarse_leaf", coarseLeaf, coarseLeaf);
+    pnh.param("fine_max_corr", fineMaxCorr, fineMaxCorr);
+    pnh.param("coarse_max_corr", coarseMaxCorr, coarseMaxCorr);
+    pnh.param("fitness_thresh", fitnessThresh, fitnessThresh);
     pnh.param("fitness_thresh_after", fitnessThreshAfter, fitnessThreshAfter);
-
 
     kdTreeMap->setInputCloud(priorMap);
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
@@ -281,12 +280,13 @@ private:
         predPose.rot = (prevPose.rot * dq).normalized();
       }
 
-      // 7) ICP against priorMap
+      // --- 7) ICP against priorMap ---
+
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
       double bestFitness = std::numeric_limits<double>::infinity();
 
-      // Prepare downsampled clouds
-      CloudXYZIPtr srcCoarse(new CloudXYZI());
+      // Prepare down‐sampled clouds
+      pcl::PointCloud<PointXYZI>::Ptr srcCoarse(new pcl::PointCloud<PointXYZI>());
       {
         pcl::VoxelGrid<PointXYZI> vg;
         vg.setInputCloud(srcFine);
@@ -294,70 +294,81 @@ private:
         vg.filter(*srcCoarse);
       }
 
-      // Base pose
-      double yaw0 = predPose.yaw() * M_PI / 180.0;
+      // Base pose from IMU
       Eigen::Matrix3f R0 = predPose.rot.cast<float>().toRotationMatrix();
       Eigen::Vector3f T0 = predPose.pos.cast<float>();
 
-      std::vector<double> yaw_offsets;
+      // Yaw offsets
+      std::vector<double> yawOffsets;
       if (first_cloud_)
       {
-        for (double d = 0; d < 360; d += 30.0)
-          yaw_offsets.push_back(d);
+        for (double d = 0.0; d < 360.0; d += 30.0)
+          yawOffsets.push_back(d);
       }
       else
       {
-        for (double d = -10; d < 10; d += 5.0)
-          yaw_offsets.push_back(d);
+        for (double d = -10.0; d <= 10.0; d += 5.0)
+          yawOffsets.push_back(d);
       }
 
-      for (double d : yaw_offsets)
+      // Loop over yaw guesses
+      for (double d : yawOffsets)
       {
-        // build guess with yaw offset d
-        double yaw = prevPose.yaw() * M_PI / 180.0 + d * M_PI / 180.0;
-        Eigen::AngleAxisf rz((float)yaw, Eigen::Vector3f::UnitZ());
+        double yawRad = (prevPose.yaw() + d) * M_PI / 180.0;
+        Eigen::AngleAxisf rotZ((float)yawRad, Eigen::Vector3f::UnitZ());
         Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
-        guess.block<3, 3>(0, 0) = R0 * rz.toRotationMatrix();
+        guess.block<3, 3>(0, 0) = R0 * rotZ.toRotationMatrix();
         guess.block<3, 1>(0, 3) = T0;
 
-        // Coarse pass
-        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp1;
-        icp1.setInputSource(srcCoarse);
-        icp1.setInputTarget(priorMap);
-        icp1.setMaxCorrespondenceDistance(coarseMaxCorr);
-        icp1.setMaximumIterations(5);
+        // Coarse ICP
+        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icpCoarse;
+        icpCoarse.setInputSource(srcCoarse);
+        icpCoarse.setInputTarget(priorMap);
+        icpCoarse.setMaxCorrespondenceDistance(coarseMaxCorr);
+        icpCoarse.setMaximumIterations(5);
         pcl::PointCloud<PointXYZI> alignedCoarse;
-        icp1.align(alignedCoarse, guess);
-        if (!icp1.hasConverged())
+        icpCoarse.align(alignedCoarse, guess);
+        if (!icpCoarse.hasConverged())
           continue;
-        Eigen::Matrix4f coarseT = icp1.getFinalTransformation();
+        Eigen::Matrix4f coarseTrans = icpCoarse.getFinalTransformation();
 
-        // Fine pass
-        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp2;
-        icp2.setInputSource(srcFine);
-        icp2.setInputTarget(priorMap);
-        icp2.setMaxCorrespondenceDistance(fineMaxCorr);
-        icp2.setMaximumIterations(10);
+        // Fine ICP
+        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icpFine;
+        icpFine.setInputSource(srcFine);
+        icpFine.setInputTarget(priorMap);
+        icpFine.setMaxCorrespondenceDistance(fineMaxCorr);
+        icpFine.setMaximumIterations(10);
         pcl::PointCloud<PointXYZI> alignedFine;
-        icp2.align(alignedFine, coarseT);
-        if (!icp2.hasConverged())
+        icpFine.align(alignedFine, coarseTrans);
+        if (!icpFine.hasConverged())
           continue;
 
-        double fit = icp2.getFitnessScore();
+        double fit = icpFine.getFitnessScore();
         if (fit < bestFitness)
         {
           bestFitness = fit;
-          bestTrans = icp2.getFinalTransformation();
+          bestTrans = icpFine.getFinalTransformation();
         }
       }
 
+      // --- additional: reject if vertical drift > 2 m ---
+      float finalZ = bestTrans(2, 3);
+      if (std::abs(finalZ - prevPose.pos.z()) > 2.0f)
+      {
+        ROS_WARN("[LITELOAM %d] ICP vertical drift = %.3f m > 2.0 m, skip",
+                 liteloam_id, finalZ - prevPose.pos.z());
+        converged_ = false;
+        continue;
+      }
+
+      // fitness threshold check
       double thresh = first_cloud_ ? fitnessThresh : fitnessThreshAfter;
       if (bestFitness >= thresh)
       {
         ROS_WARN("[LITELOAM %d] ICP fitness=%.3f >= %.1f skip",
                  liteloam_id, bestFitness, thresh);
         converged_ = false;
-        continue;
+        continue; // skip this iteration
       }
 
       first_cloud_ = false;
@@ -435,6 +446,7 @@ private:
 
         //--- print everything in green
         ROS_INFO(
+            "\n"
             "\033[1;32m[LITELOAM %d]%s pub_ts=%.3f\n"
             "    pre_pos(%.3f, %.3f, %.3f), pre_RPY(%.1f, %.1f, %.1f)\n"
             "    final_pos(%.3f, %.3f, %.3f), final_RPY(%.1f, %.1f, %.1f)\033[0m",

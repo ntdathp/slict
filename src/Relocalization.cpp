@@ -81,6 +81,7 @@ private:
 
   bool converged_ = false;
   bool first_cloud_ = true;
+  bool published_   = false;
 
 public:
   // Constructor
@@ -143,6 +144,7 @@ public:
   }
 
   bool loamConverged() const { return converged_; }
+  bool published() const { return published_; }
   bool isRunning() const { return running; }
   int getID() const { return liteloam_id; }
 
@@ -277,7 +279,7 @@ private:
 
         // Apply the delta to previous pose to get the predicted pose
         predPose.pos = prevPose.pos + (prevPose.rot * dp);
-        predPose.rot = (prevPose.rot * dq).normalized();
+        // predPose.rot = (prevPose.rot * dq).normalized();
       }
 
       // --- 7) ICP against priorMap ---
@@ -307,7 +309,7 @@ private:
       }
       else
       {
-        for (double d = -10.0; d <= 10.0; d += 5.0)
+        for (double d = 0; d < 360; d += 50.0)
           yawOffsets.push_back(d);
       }
 
@@ -371,8 +373,6 @@ private:
         continue; // skip this iteration
       }
 
-      first_cloud_ = false;
-
       // 8) Build pose & refine with IMU factor
       Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
       mytf finalPose(bestTransD);
@@ -415,6 +415,7 @@ private:
       }
 
       // 9) Publish
+      // if (!first_cloud_)
       {
         geometry_msgs::PoseStamped ps;
         ps.header.stamp = cloudTime;
@@ -467,12 +468,14 @@ private:
         outMsg.header.stamp = cloudTime;
         outMsg.header.frame_id = "map";
         alignedCloudPub.publish(outMsg);
+        published_ = true;
       }
 
       // 10) update
-      imuPreint.reset(nullptr);
-      prevPose = finalPose;
+      first_cloud_ = false;
       converged_ = true;
+      imuPreint.reset(nullptr);
+      prevPose = finalPose;;
     }
 
     ROS_INFO("LITELOAM %d exiting", liteloam_id);
@@ -518,6 +521,8 @@ private:
   std::thread bufferWatcherThread;
   const double BUFFER_TIMEOUT_SEC = 30.0;
 
+  std::atomic<bool> active_{true};
+
 public:
   ~Relocalization()
   {
@@ -535,7 +540,7 @@ public:
 
   void CheckLiteLoams()
   {
-    while (ros::ok())
+    while ((ros::ok() && active_))
     {
       {
         std::lock_guard<std::mutex> lg(loam_mtx);
@@ -549,16 +554,29 @@ public:
 
           // If one instance has been running too long but not converged,
           // restart
-          if (loam->timeSinceStart() > 12.0 && !loam->loamConverged() &&
+          if (loam->timeSinceStart() > 15.0 && !loam->loamConverged() &&
               loam->isRunning())
           {
-            ROS_INFO("[Relocalization] LITELOAM %d exceeded 12s. Restart...",
+            ROS_INFO("[Relocalization] LITELOAM %d exceeded 15s. Restart...",
                      loam->getID());
             loam->stop();
           }
-          else if (loam->loamConverged())
+          else if (loam->loamConverged() && loam->published())
           {
-            // do something else
+            
+            active_ = false;
+
+            for (auto &lm : loamInstances)
+              if (lm && lm->isRunning())
+              {
+                lm->stop();
+                ROS_INFO("Stopped LITELOAM %d", lm->getID());
+              }
+
+            lidarCloudSub.shutdown();
+            ulocSub.shutdown();
+
+            return;
           }
         }
       }

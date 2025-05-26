@@ -129,8 +129,8 @@
         <param name="coarse_leaf"         value="0.4" />
         <param name="fine_max_corr"       value="5.0" />
         <param name="coarse_max_corr"     value="15.0" />
-        <param name="fitness_thresh"      value="3.0" />
-        <param name="fitness_thresh_after" value="1.0" />
+        <param name="fitness_thresh"      value="4.0" />
+        <param name="fitness_thresh_after" value="5.0" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 
@@ -147,11 +147,11 @@
       <remap from="/reloc_pose" to="/uwb_pose"/> -->
 
       <!-- Run the Estimator -->
-      <!-- <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
+      <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map"  type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
       <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"
             launch-prefix="gdb -ex run - -args"/> -->
 
@@ -159,8 +159,8 @@
       <!-- <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/> -->
 
       <!--- Run Rviz-->
-      <!-- <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
-            args="-d $(find slict)/launch/mcdviral.rviz" /> -->
+      <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
+            args="-d $(find slict)/launch/mcdviral.rviz" />
 
       <!-- An offset time -->
       <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>
@@ -174,6 +174,10 @@
             args="$(arg publish_clock) $(arg bag_file) -r 0.25 -s $(arg start_time)"
             launch-prefix="bash -c 'sleep $(arg wait_time); $0 $@' "/>
 
+      
+      <node pkg="slict" type="odom_to_tf.py" name="odom_to_tf" output="screen" respawn="false"/>
+
+      
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
 
 </launch>

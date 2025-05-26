@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
   tf
   tf_conversions
+  tf2_ros
   roscpp
   rospy
   cv_bridge
@@ -110,6 +111,12 @@ include_directories(
   ${CERES_INCLUDE_DIR}
 )
 
+
+## Install Python scripts
+catkin_install_python(PROGRAMS
+  scripts/odom_to_tf.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Declare a C++ library
 

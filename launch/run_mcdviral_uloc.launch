@@ -127,9 +127,9 @@
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
         <param name="fine_leaf"           value="0.2" />
         <param name="coarse_leaf"         value="0.4" />
-        <param name="fine_max_corr"       value="5.0" />
+        <param name="fine_max_corr"       value="7.0" />
         <param name="coarse_max_corr"     value="15.0" />
-        <param name="fitness_thresh"      value="4.0" />
+        <param name="fitness_thresh"      value="2.0" />
         <param name="fitness_thresh_after" value="5.0" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>

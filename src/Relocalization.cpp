@@ -208,7 +208,7 @@ private:
         while (!imu_queue.empty())
         {
           double t = imu_queue.front()->header.stamp.toSec();
-          if (t < tPrev)
+          if (t < tPrev && !first_cloud_)
           {
             imu_queue.pop_front();
             continue;
@@ -540,7 +540,7 @@ public:
 
   void CheckLiteLoams()
   {
-    while ((ros::ok() && active_))
+    while (ros::ok())
     {
       {
         std::lock_guard<std::mutex> lg(loam_mtx);
@@ -561,10 +561,13 @@ public:
                      loam->getID());
             loam->stop();
           }
-          else if (loam->loamConverged() && loam->published())
+          else if (loam->loamConverged())
           {
             
-            active_ = false;
+            // active_ = false;
+
+            lidarCloudSub.shutdown();
+            ulocSub.shutdown();
 
             for (auto &lm : loamInstances)
               if (lm && lm->isRunning())
@@ -573,14 +576,11 @@ public:
                 ROS_INFO("Stopped LITELOAM %d", lm->getID());
               }
 
-            lidarCloudSub.shutdown();
-            ulocSub.shutdown();
-
             return;
           }
         }
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
 

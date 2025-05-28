@@ -81,7 +81,8 @@ private:
 
   bool converged_ = false;
   bool first_cloud_ = true;
-  bool published_   = false;
+  bool published_ = false;
+  bool use_first_cloud_ = true;
 
 public:
   // Constructor
@@ -112,6 +113,7 @@ public:
     pnh.param("coarse_max_corr", coarseMaxCorr, coarseMaxCorr);
     pnh.param("fitness_thresh", fitnessThresh, fitnessThresh);
     pnh.param("fitness_thresh_after", fitnessThreshAfter, fitnessThreshAfter);
+    pnh.param("use_first_cloud", use_first_cloud_, true);
 
     kdTreeMap->setInputCloud(priorMap);
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
@@ -415,7 +417,7 @@ private:
       }
 
       // 9) Publish
-      // if (!first_cloud_)
+      if (use_first_cloud_ || !first_cloud_)
       {
         geometry_msgs::PoseStamped ps;
         ps.header.stamp = cloudTime;
@@ -449,8 +451,8 @@ private:
         ROS_INFO(
             "\n"
             "\033[1;32m[LITELOAM %d]%s pub_ts=%.3f\n"
-            "    pre_pos(%.3f, %.3f, %.3f), pre_RPY(%.1f, %.1f, %.1f)\n"
-            "    final_pos(%.3f, %.3f, %.3f), final_RPY(%.1f, %.1f, %.1f)\033[0m",
+            "           pre_pos(%.3f, %.3f, %.3f), pre_RPY(%.1f, %.1f, %.1f)\n"
+            "           final_pos(%.3f, %.3f, %.3f), final_RPY(%.1f, %.1f, %.1f)\033[0m",
             liteloam_id,
             printFirst ? " ** FIRST CLOUD **" : "",
             pub_ts,
@@ -475,7 +477,8 @@ private:
       first_cloud_ = false;
       converged_ = true;
       imuPreint.reset(nullptr);
-      prevPose = finalPose;;
+      prevPose = finalPose;
+      ;
     }
 
     ROS_INFO("LITELOAM %d exiting", liteloam_id);
@@ -561,9 +564,9 @@ public:
                      loam->getID());
             loam->stop();
           }
-          else if (loam->loamConverged())
+          else if (loam->loamConverged() && loam->published())
           {
-            
+
             // active_ = false;
 
             lidarCloudSub.shutdown();

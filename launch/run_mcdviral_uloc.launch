@@ -15,9 +15,9 @@
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
       <arg name="data_path"       default="/home/dat/Downloads/data/MCDVIRAL"/>
 
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/> -->
@@ -129,8 +129,9 @@
         <param name="coarse_leaf"         value="0.4" />
         <param name="fine_max_corr"       value="7.0" />
         <param name="coarse_max_corr"     value="15.0" />
-        <param name="fitness_thresh"      value="2.0" />
+        <param name="fitness_thresh"      value="5.0" />
         <param name="fitness_thresh_after" value="5.0" />
+        <param name="use_first_cloud" value="true" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 

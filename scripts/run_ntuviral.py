@@ -13,9 +13,7 @@ from nav_msgs.msg import Odometry  # Using Odometry instead of PoseStamped
 DATASET_ROOT    = "/home/dat/Downloads/data/ntuviral/"
 ROSLAUNCH_FILE  = "slict run_ntuviral.launch"
 TIMEOUT_SEC     = 10
-TARGET_FOLDERS  = ["eee_01", "eee_02", "eee_03",
-                   "sbs_02", "sbs_03",
-                   "nya_01", "nya_02", "nya_03"]  # Only run these folders
+TARGET_FOLDERS  = ["tnp_01", "tnp_02", "tnp_03"]  # Only run these folders
 # =============================================================== #
 
 last_msg_time = None  # will hold ROS time of last /opt_odom

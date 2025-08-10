@@ -72,9 +72,20 @@ private:
   // IMU pre‐integration
   std::unique_ptr<PreintBase> imuPreint;
 
-  // ICP params (single-step)
-  float fineLeaf = 0.1f;
-  double fineMaxCorr = 10.0;
+  // ===== ICP tuning (coarse -> fine) =====
+  int icp_max_iter_coarse_ = 35; // Number of iterations for coarse pass
+  int icp_max_iter_fine_ = 60;   // Number of iterations for fine pass
+  double trans_eps_ = 1e-6;      // Stricter convergence on incremental transform
+  double fit_eps_ = 1e-5;        // Stricter convergence on fitness
+  double ransac_thresh_ = 0.05;  // Reject bad correspondences (meters)
+  bool use_recip_corr_ = true;   // Reciprocal correspondences increase robustness
+
+  double max_corr_coarse_ = 12.0; // Max correspondence distance for coarse pass
+  double max_corr_fine_ = 4.0;    // Max correspondence distance for fine pass
+
+  float leaf_coarse_ = 0.20f; // Voxel size for coarse downsampling
+  float leaf_fine_ = 0.08f;   // Voxel size for fine downsampling
+
   double fitnessThresh = 4.0;
   double fitnessThreshAfter = 2.0;
 
@@ -96,20 +107,27 @@ public:
         initPose(initP),
         prevPose(initP),
         liteloam_id(id),
-        fineLeaf(0.1f),
-        fineMaxCorr(10.0),
-        fitnessThresh(4.0),
-        fitnessThreshAfter(2.0),
         converged_(false),
         first_cloud_(true),
         published_(false),
         use_first_cloud_(true)
   {
     ros::NodeHandle pnh("~"); // private handle
-    pnh.param("fine_leaf", fineLeaf, fineLeaf);
-    pnh.param("fine_max_corr", fineMaxCorr, fineMaxCorr);
+
+    // ===== Read ICP tuning from ROS params (with sensible defaults) =====
+    pnh.param("icp_max_iter_coarse", icp_max_iter_coarse_, icp_max_iter_coarse_);
+    pnh.param("icp_max_iter_fine", icp_max_iter_fine_, icp_max_iter_fine_);
+    pnh.param("trans_eps", trans_eps_, trans_eps_);
+    pnh.param("fit_eps", fit_eps_, fit_eps_);
+    pnh.param("ransac_thresh", ransac_thresh_, ransac_thresh_);
+    pnh.param("use_recip_corr", use_recip_corr_, use_recip_corr_);
+    pnh.param("max_corr_coarse", max_corr_coarse_, max_corr_coarse_);
+    pnh.param("max_corr_fine", max_corr_fine_, max_corr_fine_);
+    pnh.param("leaf_coarse", leaf_coarse_, leaf_coarse_);
+    pnh.param("leaf_fine", leaf_fine_, leaf_fine_);
     pnh.param("fitness_thresh", fitnessThresh, fitnessThresh);
     pnh.param("fitness_thresh_after", fitnessThreshAfter, fitnessThreshAfter);
+
     pnh.param("use_first_cloud", use_first_cloud_, true);
 
     kdTreeMap->setInputCloud(priorMap);
@@ -141,12 +159,14 @@ public:
   void shutdown()
   {
     running = false;
+
+    if (processThread.joinable())
+      processThread.join();
+
     lidarCloudSub.shutdown();
     imuSub.shutdown();
     alignedCloudPub.shutdown();
     relocPub.shutdown();
-    if (processThread.joinable())
-      processThread.join();
   }
 
   bool loamConverged() const { return converged_; }
@@ -199,12 +219,19 @@ private:
       double dt = tNow - tPrev;
       (void)dt; // unused but kept for potential future use
 
-      // 4) downsample (single level)
-      CloudXYZIPtr srcFine(new CloudXYZI());
+      // --- 4) Two-level downsampling (coarse + fine) ---
+      // Coarse keeps structure, reduces outliers; Fine preserves details for precise alignment.
+      CloudXYZIPtr srcCoarse(new CloudXYZI()), srcFine(new CloudXYZI());
       {
         pcl::VoxelGrid<PointXYZI> vg;
+        // Coarse downsample from raw
         vg.setInputCloud(raw);
-        vg.setLeafSize(fineLeaf, fineLeaf, fineLeaf);
+        vg.setLeafSize(leaf_coarse_, leaf_coarse_, leaf_coarse_);
+        vg.filter(*srcCoarse);
+
+        // Fine downsample directly from raw to preserve details
+        vg.setInputCloud(raw);
+        vg.setLeafSize(leaf_fine_, leaf_fine_, leaf_fine_);
         vg.filter(*srcFine);
       }
 
@@ -286,83 +313,114 @@ private:
         // predPose.rot = (prevPose.rot * dq).normalized(); // optional
       }
 
-      // --- 7) Single-step ICP against priorMap (with yaw sweep for init) ---
+      // --- 7) Coarse -> Fine ICP against priorMap ---
+      // Strategy:
+      //   1) Coarse pass: broader search (bigger max_corr, fewer constraints) to find a reasonable basin.
+      //   2) Fine pass: tighter search (smaller max_corr, more iterations) for accuracy.
+      // We also test a small yaw sweep around the IMU-seeded orientation to avoid local minima.
+
       Eigen::Matrix4f bestTrans = Eigen::Matrix4f::Identity();
       double bestFitness = std::numeric_limits<double>::infinity();
 
-      // Base pose from IMU
+      // Base pose from IMU seed
       Eigen::Matrix3f R0 = predPose.rot.cast<float>().toRotationMatrix();
       Eigen::Vector3f T0 = predPose.pos.cast<float>();
 
-      // Yaw offsets (keep coarse sweep for first cloud)
+      // Yaw offsets: larger search for first cloud, narrower later
       std::vector<double> yawOffsets;
-
       if (first_cloud_)
       {
-        for (double d = 0.0; d < 360.0; d += 30.0)
+        for (double d = -90.0; d <= 90.0; d += 15.0)
           yawOffsets.push_back(d);
       }
       else
       {
-        for (double d = 0; d < 360; d += 50.0)
+        for (double d = -30.0; d <= 30.0; d += 10.0)
           yawOffsets.push_back(d);
       }
 
+      // Helper to run PCL ICP with consistent settings
+      auto run_icp = [&](const CloudXYZIPtr &src,
+                         double max_corr,
+                         int max_iter,
+                         const Eigen::Matrix4f &init,
+                         Eigen::Matrix4f &T_out,
+                         double &fitness) -> bool
+      {
+        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp;
+        icp.setInputSource(src);
+        icp.setInputTarget(priorMap);
+        icp.setUseReciprocalCorrespondences(use_recip_corr_);
+        icp.setMaxCorrespondenceDistance(max_corr);
+        icp.setMaximumIterations(max_iter);
+        icp.setTransformationEpsilon(trans_eps_);
+        icp.setEuclideanFitnessEpsilon(fit_eps_);
+        icp.setRANSACOutlierRejectionThreshold(ransac_thresh_);
+
+        pcl::PointCloud<PointXYZI> aligned;
+        icp.align(aligned, init);
+        if (!icp.hasConverged())
+          return false;
+
+        fitness = icp.getFitnessScore();
+        T_out = icp.getFinalTransformation();
+        return true;
+      };
+
+      Eigen::Matrix4f coarse_best_T = Eigen::Matrix4f::Identity();
+      double coarse_best_fit = std::numeric_limits<double>::infinity();
+
+      // 7a) Coarse pass: try multiple yaw initializations
       for (double d : yawOffsets)
       {
-        // if (!running)
-        //   break;
-
-        double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
+        const double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
         Eigen::AngleAxisf rotZ((float)yawRad, Eigen::Vector3f::UnitZ());
+
         Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
         guess.block<3, 3>(0, 0) = R0 * rotZ.toRotationMatrix();
         guess.block<3, 1>(0, 3) = T0;
 
-        pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp;
-        icp.setInputSource(srcFine);
-        icp.setInputTarget(priorMap);
-        icp.setMaxCorrespondenceDistance(fineMaxCorr);
-        icp.setMaximumIterations(20);
-        icp.setTransformationEpsilon(1e-4);          
-        icp.setEuclideanFitnessEpsilon(1e-3);         
-        icp.setUseReciprocalCorrespondences(false);  
-        icp.setRANSACOutlierRejectionThreshold(0.05); 
-
-        pcl::PointCloud<PointXYZI> aligned;
-        icp.align(aligned, guess);
-        if (!icp.hasConverged())
-          continue;
-
-        double fit = icp.getFitnessScore();
-        if (fit < bestFitness)
+        Eigen::Matrix4f T_tmp;
+        double fit_tmp;
+        if (run_icp(srcCoarse, max_corr_coarse_, icp_max_iter_coarse_, guess, T_tmp, fit_tmp))
         {
-          bestFitness = fit;
-          bestTrans = icp.getFinalTransformation();
+          if (fit_tmp < coarse_best_fit)
+          {
+            coarse_best_fit = fit_tmp;
+            coarse_best_T = T_tmp;
+          }
         }
-        // double thresh = first_cloud_ ? fitnessThresh : fitnessThreshAfter;
-
-        if (bestFitness < 1.5)
-          break;
       }
 
-      // if (!running)
-      //   break;
-
-      // // --- reject if vertical drift > 2 m ---
-      // float finalZ = bestTrans(2, 3);
-      // if (std::abs(finalZ - prevPose.pos.z()) > 2.0f)
-      // {
-      //   converged_ = false;
-      //   continue;
-      // }
-
-      // fitness threshold check
-      double thresh = first_cloud_ ? fitnessThresh : fitnessThreshAfter;
-      if (bestFitness >= thresh)
+      // If coarse pass fails completely, skip this frame
+      if (!std::isfinite(coarse_best_fit))
       {
-        ROS_WARN("[LITELOAM %d] ICP fitness=%.3f >= %.1f skip",
-                 liteloam_id, bestFitness, thresh);
+        ROS_WARN("[LITELOAM %d] Coarse ICP failed; skipping", liteloam_id);
+        converged_ = false;
+        continue;
+      }
+
+      // 7b) Fine pass: tighten distances and iterate more for precision
+      Eigen::Matrix4f T_fine;
+      double fit_fine;
+      if (!run_icp(srcFine, max_corr_fine_, icp_max_iter_fine_, coarse_best_T, T_fine, fit_fine))
+      {
+        ROS_WARN("[LITELOAM %d] Fine ICP failed; skipping", liteloam_id);
+        converged_ = false;
+        continue;
+      }
+
+      bestTrans = T_fine;
+      bestFitness = fit_fine;
+
+      // Use stricter fitness thresholds to accept only accurate alignments
+      double fitness_threshold = first_cloud_
+                                     ? fitnessThresh
+                                     : fitnessThreshAfter;
+      if (bestFitness >= fitness_threshold)
+      {
+        ROS_WARN("[LITELOAM %d] ICP fitness=%.4f >= %.3f (tight); skipping",
+                 liteloam_id, bestFitness, fitness_threshold);
         converged_ = false;
         continue;
       }

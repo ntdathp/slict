@@ -15,7 +15,7 @@
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
       <arg name="data_path"       default="/home/dat/Downloads/data/MCDVIRAL"/>
 
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
@@ -126,9 +126,9 @@
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
         <param name="fine_leaf"           value="0.2" />
-        <param name="fine_max_corr"       value="5.0" />
-        <param name="fitness_thresh"      value="2.5" />
-        <param name="fitness_thresh_after" value="1.0" />
+        <param name="fine_max_corr"       value="10.0" />
+        <param name="fitness_thresh"      value="3.0" />
+        <param name="fitness_thresh_after" value="3.0" />
         <param name="use_first_cloud" value="true" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>

@@ -296,7 +296,7 @@ private:
 
       // Yaw offsets (keep coarse sweep for first cloud)
       std::vector<double> yawOffsets;
-      
+
       if (first_cloud_)
       {
         for (double d = 0.0; d < 360.0; d += 30.0)
@@ -310,7 +310,8 @@ private:
 
       for (double d : yawOffsets)
       {
-        if (!running) break;
+        // if (!running)
+        //   break;
 
         double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
         Eigen::AngleAxisf rotZ((float)yawRad, Eigen::Vector3f::UnitZ());
@@ -323,6 +324,10 @@ private:
         icp.setInputTarget(priorMap);
         icp.setMaxCorrespondenceDistance(fineMaxCorr);
         icp.setMaximumIterations(20);
+        icp.setTransformationEpsilon(1e-4);          
+        icp.setEuclideanFitnessEpsilon(1e-3);         
+        icp.setUseReciprocalCorrespondences(false);  
+        icp.setRANSACOutlierRejectionThreshold(0.05); 
 
         pcl::PointCloud<PointXYZI> aligned;
         icp.align(aligned, guess);
@@ -335,17 +340,22 @@ private:
           bestFitness = fit;
           bestTrans = icp.getFinalTransformation();
         }
+        // double thresh = first_cloud_ ? fitnessThresh : fitnessThreshAfter;
+
+        if (bestFitness < 1.5)
+          break;
       }
 
-      if (!running) break;
+      // if (!running)
+      //   break;
 
-      // --- reject if vertical drift > 2 m ---
-      float finalZ = bestTrans(2, 3);
-      if (std::abs(finalZ - prevPose.pos.z()) > 2.0f)
-      {
-        converged_ = false;
-        continue;
-      }
+      // // --- reject if vertical drift > 2 m ---
+      // float finalZ = bestTrans(2, 3);
+      // if (std::abs(finalZ - prevPose.pos.z()) > 2.0f)
+      // {
+      //   converged_ = false;
+      //   continue;
+      // }
 
       // fitness threshold check
       double thresh = first_cloud_ ? fitnessThresh : fitnessThreshAfter;
@@ -532,10 +542,10 @@ public:
             continue;
 
           // If one instance has been running too long but not converged, restart
-          if (loam->timeSinceStart() > 20.0 && !loam->loamConverged() &&
+          if (loam->timeSinceStart() > 10.0 && !loam->loamConverged() &&
               loam->isRunning())
           {
-            ROS_INFO("[Relocalization] LITELOAM %d exceeded 20s. Restart...",
+            ROS_INFO("[Relocalization] LITELOAM %d exceeded 10s. Restart...",
                      loam->getID());
             loam->stop();
           }
@@ -547,7 +557,7 @@ public:
             std::vector<std::shared_ptr<LITELOAM>> locals;
             {
               std::lock_guard<std::mutex> lg(loam_mtx);
-              locals.swap(loamInstances); 
+              locals.swap(loamInstances);
             }
             for (auto &lm : locals)
             {
@@ -677,7 +687,7 @@ public:
     {
       std::lock_guard<std::mutex> lg(loam_mtx);
 
-      if (loamInstances.size() < 10)
+      if (loamInstances.size() < 5)
       {
         int newID = static_cast<int>(loamInstances.size());
         auto inst = std::make_shared<LITELOAM>(

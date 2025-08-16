@@ -330,13 +330,13 @@ private:
       std::vector<double> yawOffsets;
       if (first_cloud_)
       {
-        for (double d = -90.0; d <= 90.0; d += 15.0)
+        for (double d = -180.0; d <= 180.0; d += 30.0)
           yawOffsets.push_back(d);
       }
       else
       {
-        for (double d = -30.0; d <= 30.0; d += 10.0)
-          yawOffsets.push_back(d);
+        double d = 0.0;
+        yawOffsets.push_back(d);
       }
 
       // Helper to run PCL ICP with consistent settings

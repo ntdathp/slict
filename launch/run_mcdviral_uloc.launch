@@ -15,9 +15,9 @@
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
       <arg name="data_path"       default="/home/dat/Downloads/data/MCDVIRAL"/>
 
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/> -->
@@ -54,7 +54,7 @@
 
       <!-- Manual initialization for reloc, comment out the sequence's initial position if you want to use STD for relocalization -->
       <group if="$(eval 'ntu_day_01' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 49.28,   107.38,  7.58,  -41,  0, 0] </rosparam> </group>
-      <!-- <group if="$(eval 'ntu_day_02' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 61.99,   119.58,  7.69,  -134, 0, 0] </rosparam> </group> -->
+      <group if="$(eval 'ntu_day_02' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 61.99,   119.58,  7.69,  -134, 0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_day_03' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 62.82,   119.51,  7.70,   39,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_day_04' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 55.52,   110.70,  7.72,  -40,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_day_05' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 59.18,   116.06,  7.72,   42,  0, 0] </rosparam> </group>
@@ -62,7 +62,7 @@
       <group if="$(eval 'ntu_day_07' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [-27.11,  -1.57,    8.73,  -8,   0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_day_08' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 40.58,   15.90,   6.56,   48,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_day_09' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 71.90,   57.99,   7.67,   80,  0, 0] </rosparam> </group>
-      <!-- <group if="$(eval 'ntu_day_10' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 39.49,   23.48,   6.54,   36,  0, 0] </rosparam> </group> -->
+      <group if="$(eval 'ntu_day_10' in bag_file)">    <rosparam param="/tf_Lprior_L0_init"> [ 39.49,   23.48,   6.54,   36,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_night_01' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 59.69,   108.43,  7.82,  -36,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_night_02' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 55.78,   108.37,  7.78,  -32,  0, 0] </rosparam> </group>
       <group if="$(eval 'ntu_night_03' in bag_file)">  <rosparam param="/tf_Lprior_L0_init"> [ 143.28,  36.80,   8.97,  -136, 0, 0] </rosparam> </group>
@@ -125,14 +125,14 @@
       <!-- Run the relocalization -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
-        <param name="leaf_coarse"           value="0.2" />
-        <param name="leaf_fine"             value="0.15" />
-        <param name="max_corr_coarse"       value="15.0" />
-        <param name="max_corr_fine"         value="5.0" />
-        <param name="icp_max_iter_coarse"   value="3" />
-        <param name="icp_max_iter_fine"     value="10" />
+        <param name="leaf_coarse"           value="0.4" />
+        <param name="leaf_fine"             value="0.2" />
+        <param name="max_corr_coarse"       value="10.0" />
+        <param name="max_corr_fine"         value="3.0" />
+        <param name="icp_max_iter_coarse"   value="10" />
+        <param name="icp_max_iter_fine"     value="15" />
         <param name="use_recip_corr"        value="false" />
-        <param name="fitness_thresh"        value="3.0" />
+        <param name="fitness_thresh"        value="2.0" />
         <param name="fitness_thresh_after"  value="3.0" />
         <param name="use_first_cloud"       value="true" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
@@ -167,10 +167,10 @@
             args="-d $(find slict)/launch/mcdviral.rviz" /> -->
 
       <!-- An offset time -->
-      <arg name="start_time" value="13" if="$(eval 'ntu_day_02' in bag_file)"/>
-      <arg name="start_time" value="1"  if="$(eval 'ntu_day_10' in bag_file)"/>
-      <arg name="start_time" value="14"  if="$(eval 'ntu_night_04' in bag_file)"/>
       <arg name="start_time" value="0"  if="$(eval 'ntu_day_01' in bag_file)"/>
+      <arg name="start_time" value="0" if="$(eval 'ntu_day_02' in bag_file)"/>
+      <arg name="start_time" value="2"  if="$(eval 'ntu_day_10' in bag_file)"/>
+      <arg name="start_time" value="12.5"  if="$(eval 'ntu_night_04' in bag_file)"/>
       <arg name="start_time" value="0" if="$(eval 'ntu_day_02' not in bag_file and 'ntu_day_10' not in bag_file and 'ntu_night_04' not in bag_file
                                                    and 'ntu_day_01' not in bag_file)"/>
 

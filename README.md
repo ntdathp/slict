@@ -67,17 +67,12 @@ The software was developed on the following dependencies. Ubuntu 20.04 and ROS N
     ```
 - Sophus
   ```bash
-  git clone https://github.com/strasdat/Sophus
-  cd Sophus
-  mkdir build && cd build
-  cmake .. -DSOPHUS_USE_BASIC_LOGGING=ON
-  make -j$(nproc)
-  sudo make install
+  sudo apt install ros-noetic-sophus
   ```
 - One more package:
 
     ```
-    sudo apt install ros-$ROS_DISTRO-tf2-sensor-msgs
+    sudo apt install ros-noetic-tf2-sensor-msgs
     ```
 
 ## Installation

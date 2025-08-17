@@ -24,11 +24,20 @@
 #include <pcl/impl/pcl_base.hpp>
 #include <pcl/pcl_base.h>
 #include <pcl/registration/icp.h>
-#include <pcl/registration/transformation_estimation_2D.h>
+#include <pcl/registration/gicp.h>
 
-#include "GaussianProcess.hpp"
 #include "PreintBase.h"
 #include <factor/PreintFactor.h>
+
+#define KNRM "\x1B[0m"
+#define KRED "\x1B[31m"
+#define KGRN "\x1B[32m"
+#define KYEL "\x1B[33m"
+#define KBLU "\x1B[34m"
+#define KMAG "\x1B[35m"
+#define KCYN "\x1B[36m"
+#define KWHT "\x1B[37m"
+#define RESET "\033[0m"
 
 // For brevity
 typedef sensor_msgs::PointCloud2::ConstPtr rosCloudMsgPtr;
@@ -47,7 +56,14 @@ private:
   ros::Publisher alignedCloudPub;
 
   // Queues + mutex
-  std::deque<CloudXYZIPtr> cloud_queue;
+  struct TimedCloud
+  {
+    CloudXYZIPtr cloud;
+    ros::Time stamp;
+  };
+
+  std::deque<TimedCloud> cloud_queue;
+
   std::deque<sensor_msgs::ImuConstPtr> imu_queue;
   std::mutex cloud_mutex;
   std::mutex imu_mutex;
@@ -73,62 +89,52 @@ private:
   std::unique_ptr<PreintBase> imuPreint;
 
   // ===== ICP tuning (coarse -> fine) =====
-  int icp_max_iter_coarse_ = 35; // Number of iterations for coarse pass
-  int icp_max_iter_fine_ = 60;   // Number of iterations for fine pass
-  double trans_eps_ = 1e-6;      // Stricter convergence on incremental transform
-  double fit_eps_ = 1e-5;        // Stricter convergence on fitness
-  double ransac_thresh_ = 0.05;  // Reject bad correspondences (meters)
-  bool use_recip_corr_ = true;   // Reciprocal correspondences increase robustness
+  int iterCoarse = 10; 
+  int iterFine = 15;   
+  double transEps = 1e-6;     
+  double fitEps = 1e-5;        
+  double ransacThresh = 0.05;  
+  bool use_recip_corr = false;  
 
-  double max_corr_coarse_ = 12.0; // Max correspondence distance for coarse pass
-  double max_corr_fine_ = 4.0;    // Max correspondence distance for fine pass
+  double maxcorrCoarse = 10.0;
+  double maxcorrFine = 3.0;   
 
-  float leaf_coarse_ = 0.20f; // Voxel size for coarse downsampling
-  float leaf_fine_ = 0.08f;   // Voxel size for fine downsampling
+  float leafCoarse = 0.20f; 
+  float leafFine = 0.08f; 
 
-  double fitnessThresh = 4.0;
-  double fitnessThreshAfter = 2.0;
+  double icpThresh = 2.0;
 
-  bool converged_ = false;
-  bool first_cloud_ = true;
-  bool published_ = false;
-  bool use_first_cloud_ = true;
+  bool icpConverged = false;
+  bool firstCloud = true;
+  bool posePublished = false;
+  bool icpOnly = true;
 
 public:
   // Constructor
-  LITELOAM(const CloudXYZIPtr &pm,
+  LITELOAM(const CloudXYZIPtr &priorMap,
            const KdFLANNPtr &kdt,
-           const mytf &initP,
-           int id,
-           const ros::NodeHandlePtr &nh)
-      : nh_ptr(nh),
-        priorMap(pm),
+           const mytf &initPose,
+           int liteloam_id,
+           const ros::NodeHandlePtr &nh_ptr)
+      : nh_ptr(nh_ptr),
+        priorMap(priorMap),
         kdTreeMap(kdt),
-        initPose(initP),
-        prevPose(initP),
-        liteloam_id(id),
-        converged_(false),
-        first_cloud_(true),
-        published_(false),
-        use_first_cloud_(true)
+        initPose(initPose),
+        prevPose(initPose),
+        liteloam_id(liteloam_id)
   {
     ros::NodeHandle pnh("~"); // private handle
 
     // ===== Read ICP tuning from ROS params (with sensible defaults) =====
-    pnh.param("icp_max_iter_coarse", icp_max_iter_coarse_, icp_max_iter_coarse_);
-    pnh.param("icp_max_iter_fine", icp_max_iter_fine_, icp_max_iter_fine_);
-    pnh.param("trans_eps", trans_eps_, trans_eps_);
-    pnh.param("fit_eps", fit_eps_, fit_eps_);
-    pnh.param("ransac_thresh", ransac_thresh_, ransac_thresh_);
-    pnh.param("use_recip_corr", use_recip_corr_, use_recip_corr_);
-    pnh.param("max_corr_coarse", max_corr_coarse_, max_corr_coarse_);
-    pnh.param("max_corr_fine", max_corr_fine_, max_corr_fine_);
-    pnh.param("leaf_coarse", leaf_coarse_, leaf_coarse_);
-    pnh.param("leaf_fine", leaf_fine_, leaf_fine_);
-    pnh.param("fitness_thresh", fitnessThresh, fitnessThresh);
-    pnh.param("fitness_thresh_after", fitnessThreshAfter, fitnessThreshAfter);
+    pnh.param("iterCoarse", iterCoarse, iterCoarse);
+    pnh.param("iterFine", iterFine, iterFine);
+    pnh.param("maxcorrCoarse", maxcorrCoarse, maxcorrCoarse);
+    pnh.param("maxcorrFine", maxcorrFine, maxcorrFine);
+    pnh.param("leafCoarse", leafCoarse, leafCoarse);
+    pnh.param("leafFine", leafFine, leafFine);
+    pnh.param("icpThresh", icpThresh, icpThresh);
 
-    pnh.param("use_first_cloud", use_first_cloud_, true);
+    pnh.param("icpOnly", icpOnly, true);
 
     kdTreeMap->setInputCloud(priorMap);
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
@@ -169,8 +175,8 @@ public:
     relocPub.shutdown();
   }
 
-  bool loamConverged() const { return converged_; }
-  bool published() const { return published_; }
+  bool loamConverged() const { return icpConverged; }
+  bool published() const { return posePublished; }
   bool isRunning() const { return running; }
   int getID() const { return liteloam_id; }
 
@@ -183,17 +189,18 @@ private:
 
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
   {
-    std::lock_guard<std::mutex> lk(cloud_mutex);
     CloudXYZIPtr cloud(new CloudXYZI());
     pcl::fromROSMsg(*msg, *cloud);
-    cloud_queue.push_back(cloud);
+
+    std::lock_guard<std::mutex> lk(cloud_mutex);
+    cloud_queue.push_back({cloud, msg->header.stamp});
   }
 
   void processBuffer()
   {
     while (running && ros::ok())
     {
-      bool printFirst = first_cloud_;
+      bool printFirst = firstCloud;
 
       // 1) wait for cloud
       if (cloud_queue.empty())
@@ -203,16 +210,14 @@ private:
       }
 
       // 2) pop cloud
-      CloudXYZIPtr raw;
+      TimedCloud item;
       {
         std::lock_guard<std::mutex> lk(cloud_mutex);
-        raw = cloud_queue.front();
+        item = cloud_queue.front();
         cloud_queue.pop_front();
       }
-
-      // 3) timestamp & dt
-      uint64_t stamp = raw->header.stamp;
-      ros::Time cloudTime(stamp / 1000000ULL, (stamp % 1000000ULL) * 1000ULL);
+      CloudXYZIPtr raw = item.cloud;
+      ros::Time cloudTime = item.stamp;
       double tNow = cloudTime.toSec();
       double tPrev = (last_cloud_time < 0.0 ? tNow : last_cloud_time);
       last_cloud_time = tNow;
@@ -226,12 +231,12 @@ private:
         pcl::VoxelGrid<PointXYZI> vg;
         // Coarse downsample from raw
         vg.setInputCloud(raw);
-        vg.setLeafSize(leaf_coarse_, leaf_coarse_, leaf_coarse_);
+        vg.setLeafSize(leafCoarse, leafCoarse, leafCoarse);
         vg.filter(*srcCoarse);
 
         // Fine downsample directly from raw to preserve details
         vg.setInputCloud(raw);
-        vg.setLeafSize(leaf_fine_, leaf_fine_, leaf_fine_);
+        vg.setLeafSize(leafFine, leafFine, leafFine);
         vg.filter(*srcFine);
       }
 
@@ -242,7 +247,7 @@ private:
         while (!imu_queue.empty())
         {
           double t = imu_queue.front()->header.stamp.toSec();
-          if (t < tPrev && !first_cloud_)
+          if (t < tPrev)
           {
             imu_queue.pop_front();
             continue;
@@ -323,12 +328,14 @@ private:
       double bestFitness = std::numeric_limits<double>::infinity();
 
       // Base pose from IMU seed
-      Eigen::Matrix3f R0 = predPose.rot.cast<float>().toRotationMatrix();
+      Eigen::Quaternionf q0 = predPose.rot.cast<float>();
+      q0.normalize();
+      Eigen::Matrix3f R0 = q0.toRotationMatrix();
       Eigen::Vector3f T0 = predPose.pos.cast<float>();
 
       // Yaw offsets: larger search for first cloud, narrower later
       std::vector<double> yawOffsets;
-      if (first_cloud_)
+      if (firstCloud)
       {
         for (double d = -180.0; d <= 180.0; d += 30.0)
           yawOffsets.push_back(d);
@@ -347,15 +354,16 @@ private:
                          Eigen::Matrix4f &T_out,
                          double &fitness) -> bool
       {
+        // pcl::GeneralizedIterativeClosestPoint<PointXYZI, PointXYZI> icp;
         pcl::IterativeClosestPoint<PointXYZI, PointXYZI> icp;
         icp.setInputSource(src);
         icp.setInputTarget(priorMap);
-        icp.setUseReciprocalCorrespondences(use_recip_corr_);
+        icp.setUseReciprocalCorrespondences(use_recip_corr);
         icp.setMaxCorrespondenceDistance(max_corr);
         icp.setMaximumIterations(max_iter);
-        icp.setTransformationEpsilon(trans_eps_);
-        icp.setEuclideanFitnessEpsilon(fit_eps_);
-        icp.setRANSACOutlierRejectionThreshold(ransac_thresh_);
+        icp.setTransformationEpsilon(transEps);
+        icp.setEuclideanFitnessEpsilon(fitEps);
+        icp.setRANSACOutlierRejectionThreshold(ransacThresh);
 
         pcl::PointCloud<PointXYZI> aligned;
         icp.align(aligned, init);
@@ -373,16 +381,20 @@ private:
       // 7a) Coarse pass: try multiple yaw initializations
       for (double d : yawOffsets)
       {
-        const double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
-        Eigen::AngleAxisf rotZ((float)yawRad, Eigen::Vector3f::UnitZ());
+        double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
+
+        if (yawRad > M_PI)
+          yawRad -= 2.0 * M_PI;
+        else if (yawRad < -M_PI)
+          yawRad += 2.0 * M_PI;
 
         Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
-        guess.block<3, 3>(0, 0) = R0 * rotZ.toRotationMatrix();
+        guess.block<3, 3>(0, 0) = (Eigen::AngleAxisf(yawRad, Eigen::Vector3f::UnitZ()) * R0).matrix();
         guess.block<3, 1>(0, 3) = T0;
 
         Eigen::Matrix4f T_tmp;
         double fit_tmp;
-        if (run_icp(srcCoarse, max_corr_coarse_, icp_max_iter_coarse_, guess, T_tmp, fit_tmp))
+        if (run_icp(srcCoarse, maxcorrCoarse, iterCoarse, guess, T_tmp, fit_tmp))
         {
           if (fit_tmp < coarse_best_fit)
           {
@@ -395,18 +407,24 @@ private:
       // If coarse pass fails completely, skip this frame
       if (!std::isfinite(coarse_best_fit))
       {
-        ROS_WARN("[LITELOAM %d] Coarse ICP failed; skipping", liteloam_id);
-        converged_ = false;
+        printf(KYEL
+               "[LITELOAM %d] Coarse ICP failed. \n" RESET,
+               liteloam_id);
+        // raise flag
+        icpConverged = false;
         continue;
       }
 
       // 7b) Fine pass: tighten distances and iterate more for precision
       Eigen::Matrix4f T_fine;
       double fit_fine;
-      if (!run_icp(srcFine, max_corr_fine_, icp_max_iter_fine_, coarse_best_T, T_fine, fit_fine))
+      if (!run_icp(srcFine, maxcorrFine, iterFine, coarse_best_T, T_fine, fit_fine))
       {
-        ROS_WARN("[LITELOAM %d] Fine ICP failed; skipping", liteloam_id);
-        converged_ = false;
+        printf(KYEL
+               "[LITELOAM %d] Fine ICP failed. \n" RESET,
+               liteloam_id);
+        // raise flag
+        icpConverged = false;
         continue;
       }
 
@@ -414,20 +432,29 @@ private:
       bestFitness = fit_fine;
 
       // Use stricter fitness thresholds to accept only accurate alignments
-      double fitness_threshold = first_cloud_
-                                     ? fitnessThresh
-                                     : fitnessThreshAfter;
+      double fitness_threshold = firstCloud
+                                     ? icpThresh
+                                     : icpThresh;
       if (bestFitness >= fitness_threshold)
       {
-        ROS_WARN("[LITELOAM %d] ICP fitness=%.4f >= %.3f (tight); skipping",
-                 liteloam_id, bestFitness, fitness_threshold);
-        converged_ = false;
+
+        printf(KYEL
+               "[LITELOAM %d] ICP fitness: %.4f \n"
+               "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" 
+               RESET,
+               liteloam_id, bestFitness,
+               prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
+               prevPose.yaw(), prevPose.pitch(), prevPose.roll()
+        );
+        icpConverged = false;
         continue;
       }
 
       // 8) Build pose & refine with IMU factor
       Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
       mytf finalPose(bestTransD);
+      if (finalPose.rot.w() < 0.0)
+        finalPose.rot.coeffs() *= -1.0;
 
       if (imuPreint)
       {
@@ -467,7 +494,7 @@ private:
       }
 
       // 9) Publish
-      if (use_first_cloud_ || !first_cloud_)
+      if (icpOnly || !firstCloud)
       {
         geometry_msgs::PoseStamped ps;
         ps.header.stamp = cloudTime;
@@ -495,21 +522,20 @@ private:
 
         double pub_ts = ps.header.stamp.toSec();
 
-        ROS_INFO(
-            "\n"
-            "\033[1;32m[LITELOAM %d]%s pub_ts=%.3f\n"
-            "           pre_pos(%.3f, %.3f, %.3f), pre_RPY(%.1f, %.1f, %.1f)\n"
-            "           final_pos(%.3f, %.3f, %.3f), final_RPY(%.1f, %.1f, %.1f)\n"
-            "           finess_score: %.3f \033[0m",
-            liteloam_id,
-            printFirst ? " ** FIRST CLOUD **" : "",
-            pub_ts,
-            pre_x, pre_y, pre_z, pre_roll, pre_pitch, pre_yaw,
-            ps.pose.position.x,
-            ps.pose.position.y,
-            ps.pose.position.z,
-            roll, pitch, yaw,
-            bestFitness);
+
+        printf(KGRN
+               "[LITELOAM %d] ICP fitness: %.4f. FC: %s. T_in: %.3f \n"
+               "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n"
+               "Plast: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" 
+               RESET,
+               liteloam_id, bestFitness,
+               printFirst ? "True" : "False",
+               ps.header.stamp.toSec(),
+               prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
+               prevPose.yaw(), prevPose.pitch(), prevPose.roll(),
+               finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
+               finalPose.yaw(), finalPose.pitch(), finalPose.roll()
+        );
 
         sensor_msgs::PointCloud2 outMsg;
         pcl::PointCloud<PointXYZI> aligned;
@@ -519,18 +545,20 @@ private:
         outMsg.header.stamp = cloudTime;
         outMsg.header.frame_id = "map";
         alignedCloudPub.publish(outMsg);
-        published_ = true;
+
+        // raise flag
+        posePublished = true;
         running = false;
       }
 
       // 10) update
-      first_cloud_ = false;
-      converged_ = true;
+      firstCloud = false;
+      icpConverged = true;
       imuPreint.reset(nullptr);
       prevPose = finalPose;
     }
 
-    ROS_INFO("LITELOAM %d exiting", liteloam_id);
+    printf("[LITELOAM %d] exiting. \n", liteloam_id);
   }
 };
 
@@ -571,6 +599,7 @@ private:
   std::thread checkLoamThread;
 
   std::atomic<bool> active_{true};
+  int liteloamNum = 5;
 
 public:
   ~Relocalization()
@@ -603,7 +632,7 @@ public:
           if (loam->timeSinceStart() > 10.0 && !loam->loamConverged() &&
               loam->isRunning())
           {
-            ROS_INFO("[Relocalization] LITELOAM %d exceeded 10s. Restart...",
+            printf("[Relocalization] LITELOAM %d exceeded 10s. Restart... \n",
                      loam->getID());
             loam->stop();
           }
@@ -639,19 +668,21 @@ public:
 
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &Relocalization::PCHandler, this);
 
+    nh_ptr->param("/liteloamNum", liteloamNum, liteloamNum);
+
     // loadPriorMap
     string prior_map_dir = "";
-    nh_ptr->param("/prior_map_dir", prior_map_dir, string(""));
-    ROS_INFO("prior_map_dir: %s", prior_map_dir.c_str());
+    nh_ptr->param("/priormap_dir", prior_map_dir, string(""));
+    ROS_INFO("[RELOC] priormap_dir: %s", prior_map_dir.c_str());
 
     this->priorMap.reset(new pcl::PointCloud<pcl::PointXYZI>());
     this->kdTreeMap.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
 
     std::string pcd_file = prior_map_dir + "/priormap.pcd";
-    ROS_INFO("Prebuilt pcd map found, loading...");
+    ROS_INFO("[RELOC] Prebuilt pcd map found, loading...");
 
     pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
-    ROS_INFO("Prior Map (%zu points).", priorMap->size());
+    ROS_INFO("[RELOC] Prior Map (%zu points).", priorMap->size());
 
     double priormap_viz_res = 1;
     pcl::UniformSampling<pcl::PointXYZI> downsampler;
@@ -666,13 +697,13 @@ public:
     // Assign the downsampled map to priorMap
     this->priorMap = downsampledMap;
 
-    ROS_INFO("Downsampled Prior Map (%zu points).", priorMap->size());
+    ROS_INFO("[RELOC] Downsampled Prior Map (%zu points).", priorMap->size());
 
     // Update kdTree with the new downsampled map
     this->kdTreeMap->setInputCloud(this->priorMap);
     priorMapReady = true;
 
-    ROS_INFO("Prior Map Load Completed \n");
+    ROS_INFO("[RELOC] Prior Map Load Completed \n");
   }
 
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
@@ -691,7 +722,7 @@ public:
   {
     if (!priorMapReady)
     {
-      ROS_WARN("Prior map not yet loaded; skipping UWB callback");
+      ROS_WARN("[RELOC] Prior map not yet loaded; skipping UWB callback");
       return;
     }
 
@@ -709,7 +740,7 @@ public:
       std::lock_guard<std::mutex> lock(cloud_mutex);
       if (cloud_queue.empty())
       {
-        ROS_WARN("No LiDAR clouds received yet; cannot match timestamp");
+        ROS_WARN("[RELOC] LiDAR clouds buffer empty");
         return;
       }
       latest_cloud_time = cloud_queue.back().stamp;
@@ -733,7 +764,7 @@ public:
 
     if (!best_pose)
     {
-      ROS_WARN("Could not find a matching UWB pose for cloud at %f",
+      ROS_WARN("[RELOC] Could not find a matching ULOC for cloud at %f",
                latest_cloud_time.toSec());
       return;
     }
@@ -745,13 +776,13 @@ public:
     {
       std::lock_guard<std::mutex> lg(loam_mtx);
 
-      if (loamInstances.size() < 5)
+      if (loamInstances.size() < liteloamNum)
       {
         int newID = static_cast<int>(loamInstances.size());
         auto inst = std::make_shared<LITELOAM>(
             priorMap, kdTreeMap, start_pose, newID, nh_ptr);
         loamInstances.push_back(inst);
-        ROS_INFO("Created LITELOAM ID=%d (matched at %f)",
+        printf("[RELOC] Created LITELOAM %d (matched ULOC at %f). \n",
                  newID, best_pose->header.stamp.toSec());
       }
       else
@@ -763,7 +794,7 @@ public:
             int id = loam->getID();
             loam = std::make_shared<LITELOAM>(
                 priorMap, kdTreeMap, start_pose, id, nh_ptr);
-            ROS_INFO("Restarted LITELOAM ID=%d (matched at %f)",
+            printf("[RELOC] Restarted LITELOAM %d (matched ULOC at %f). \n",
                      id, best_pose->header.stamp.toSec());
             break;
           }

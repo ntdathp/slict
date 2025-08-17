@@ -1,6 +1,7 @@
 #include "STDesc.h"
 #include "slict/FeatureCloud.h"
 #include "utility.h"
+#include <optional>
 
 #include "PoseLocalParameterization.h"
 #include <ceres/ceres.h>
@@ -39,6 +40,12 @@
 #define KWHT "\x1B[37m"
 #define RESET "\033[0m"
 
+struct TimedCloud
+{
+  CloudXYZIPtr cloud;
+  ros::Time stamp;
+};
+
 // For brevity
 typedef sensor_msgs::PointCloud2::ConstPtr rosCloudMsgPtr;
 typedef sensor_msgs::PointCloud2 rosCloudMsg;
@@ -56,12 +63,6 @@ private:
   ros::Publisher alignedCloudPub;
 
   // Queues + mutex
-  struct TimedCloud
-  {
-    CloudXYZIPtr cloud;
-    ros::Time stamp;
-  };
-
   std::deque<TimedCloud> cloud_queue;
 
   std::deque<sensor_msgs::ImuConstPtr> imu_queue;
@@ -89,18 +90,18 @@ private:
   std::unique_ptr<PreintBase> imuPreint;
 
   // ===== ICP tuning (coarse -> fine) =====
-  int iterCoarse = 10; 
-  int iterFine = 15;   
-  double transEps = 1e-6;     
-  double fitEps = 1e-5;        
-  double ransacThresh = 0.05;  
-  bool use_recip_corr = false;  
+  int iterCoarse = 10;
+  int iterFine = 15;
+  double transEps = 1e-6;
+  double fitEps = 1e-5;
+  double ransacThresh = 0.05;
+  bool use_recip_corr = false;
 
   double maxcorrCoarse = 10.0;
-  double maxcorrFine = 3.0;   
+  double maxcorrFine = 3.0;
 
-  float leafCoarse = 0.20f; 
-  float leafFine = 0.08f; 
+  float leafCoarse = 0.20f;
+  float leafFine = 0.08f;
 
   double icpThresh = 2.0;
 
@@ -115,7 +116,8 @@ public:
            const KdFLANNPtr &kdt,
            const mytf &initPose,
            int liteloam_id,
-           const ros::NodeHandlePtr &nh_ptr)
+           const ros::NodeHandlePtr &nh_ptr,
+           const std::optional<TimedCloud> &seed_cloud)
       : nh_ptr(nh_ptr),
         priorMap(priorMap),
         kdTreeMap(kdt),
@@ -137,6 +139,12 @@ public:
     pnh.param("icpOnly", icpOnly, true);
 
     kdTreeMap->setInputCloud(priorMap);
+
+    if (seed_cloud.has_value())
+    {
+      std::lock_guard<std::mutex> lk(cloud_mutex);
+      cloud_queue.push_back(*seed_cloud); // first frame is the matched one
+    }
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
     imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
     relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
@@ -440,12 +448,10 @@ private:
 
         printf(KYEL
                "[LITELOAM %d] ICP fitness: %.4f \n"
-               "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" 
-               RESET,
+               "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" RESET,
                liteloam_id, bestFitness,
                prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
-               prevPose.yaw(), prevPose.pitch(), prevPose.roll()
-        );
+               prevPose.yaw(), prevPose.pitch(), prevPose.roll());
         icpConverged = false;
         continue;
       }
@@ -522,20 +528,17 @@ private:
 
         double pub_ts = ps.header.stamp.toSec();
 
-
         printf(KGRN
                "[LITELOAM %d] ICP fitness: %.4f. FC: %s. T_in: %.3f \n"
                "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n"
-               "Plast: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" 
-               RESET,
+               "Plast: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" RESET,
                liteloam_id, bestFitness,
                printFirst ? "True" : "False",
                ps.header.stamp.toSec(),
                prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
                prevPose.yaw(), prevPose.pitch(), prevPose.roll(),
                finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
-               finalPose.yaw(), finalPose.pitch(), finalPose.roll()
-        );
+               finalPose.yaw(), finalPose.pitch(), finalPose.roll());
 
         sensor_msgs::PointCloud2 outMsg;
         pcl::PointCloud<PointXYZI> aligned;
@@ -575,11 +578,6 @@ private:
   ros::Subscriber ulocSub;
 
   // Buffer to store recent point clouds and their timestamps
-  struct TimedCloud
-  {
-    CloudXYZIPtr cloud;
-    ros::Time stamp;
-  };
   std::deque<TimedCloud> cloud_queue;
   std::mutex cloud_mutex;
 
@@ -633,7 +631,7 @@ public:
               loam->isRunning())
           {
             printf("[Relocalization] LITELOAM %d exceeded 10s. Restart... \n",
-                     loam->getID());
+                   loam->getID());
             loam->stop();
           }
           else if (loam->published())
@@ -713,7 +711,7 @@ public:
 
     std::lock_guard<std::mutex> lock(cloud_mutex);
     cloud_queue.push_back({cloud, msg->header.stamp});
-    if (cloud_queue.size() > 200)
+    if (cloud_queue.size() > 10)
       cloud_queue.pop_front();
   }
 
@@ -730,21 +728,22 @@ public:
     {
       std::lock_guard<std::mutex> lock(uloc_mutex);
       uloc_buffer.push_back(msg);
-      if (uloc_buffer.size() > 50)
+      if (uloc_buffer.size() > 10000)
         uloc_buffer.pop_front();
+    }
+
+    TimedCloud matched_cloud;
+    {
+      std::lock_guard<std::mutex> lock(cloud_mutex);
+      if (cloud_queue.empty())
+        return;
+      matched_cloud = cloud_queue.back(); // copy
     }
 
     // Get the timestamp of the most recent LiDAR cloud
     ros::Time latest_cloud_time;
     {
-      std::lock_guard<std::mutex> lock(cloud_mutex);
-      if (cloud_queue.empty())
-      {
-        // ROS_WARN("[RELOC] LiDAR clouds buffer empty");
-        return;
-      }
-      latest_cloud_time = cloud_queue.back().stamp;
-      cloud_queue.pop_back(); 
+      latest_cloud_time = matched_cloud.stamp;
     }
 
     // Pick the UWB pose with MIN absolute time difference
@@ -770,6 +769,18 @@ public:
       return;
     }
 
+    {
+      std::lock_guard<std::mutex> lock(uloc_mutex);
+
+      auto it = std::find_if(uloc_buffer.begin(), uloc_buffer.end(),
+                             [&](const geometry_msgs::PoseStamped::ConstPtr &p)
+                             {
+                               return p.get() == best_pose.get();
+                             });
+      if (it != uloc_buffer.end())
+        uloc_buffer.erase(it);
+    }
+
     // Wrap the matched pose into your transform type
     mytf start_pose(*best_pose);
 
@@ -781,10 +792,10 @@ public:
       {
         int newID = static_cast<int>(loamInstances.size());
         auto inst = std::make_shared<LITELOAM>(
-            priorMap, kdTreeMap, start_pose, newID, nh_ptr);
+            priorMap, kdTreeMap, start_pose, newID, nh_ptr, std::make_optional(matched_cloud));
         loamInstances.push_back(inst);
         printf("[RELOC] Created LITELOAM %d (matched ULOC at %f). \n",
-                 newID, best_pose->header.stamp.toSec());
+               newID, best_pose->header.stamp.toSec());
       }
       else
       {
@@ -794,9 +805,9 @@ public:
           {
             int id = loam->getID();
             loam = std::make_shared<LITELOAM>(
-                priorMap, kdTreeMap, start_pose, id, nh_ptr);
+                priorMap, kdTreeMap, start_pose, id, nh_ptr, std::make_optional(matched_cloud));
             printf("[RELOC] Restarted LITELOAM %d (matched ULOC at %f). \n",
-                     id, best_pose->header.stamp.toSec());
+                   id, best_pose->header.stamp.toSec());
             break;
           }
         }

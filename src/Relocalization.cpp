@@ -740,10 +740,11 @@ public:
       std::lock_guard<std::mutex> lock(cloud_mutex);
       if (cloud_queue.empty())
       {
-        ROS_WARN("[RELOC] LiDAR clouds buffer empty");
+        // ROS_WARN("[RELOC] LiDAR clouds buffer empty");
         return;
       }
       latest_cloud_time = cloud_queue.back().stamp;
+      cloud_queue.pop_back(); 
     }
 
     // Pick the UWB pose with MIN absolute time difference

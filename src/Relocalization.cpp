@@ -3,6 +3,8 @@
 #include "utility.h"
 #include <optional>
 
+#include <sensor_msgs/Imu.h>
+
 #include "PoseLocalParameterization.h"
 #include <ceres/ceres.h>
 
@@ -26,6 +28,7 @@
 #include <pcl/pcl_base.h>
 #include <pcl/registration/icp.h>
 #include <pcl/registration/gicp.h>
+#include <pcl/io/pcd_io.h>
 
 #include "PreintBase.h"
 #include <factor/PreintFactor.h>
@@ -58,16 +61,20 @@ private:
 
   // Subscribers & publishers
   ros::Subscriber lidarCloudSub;
-  ros::Subscriber imuSub;
+  // ros::Subscriber imuSub;
   ros::Publisher relocPub;
   ros::Publisher alignedCloudPub;
 
   // Queues + mutex
   std::deque<TimedCloud> cloud_queue;
 
-  std::deque<sensor_msgs::ImuConstPtr> imu_queue;
+  // std::deque<sensor_msgs::ImuConstPtr> imu_queue;
   std::mutex cloud_mutex;
-  std::mutex imu_mutex;
+  // std::mutex imu_mutex;
+
+  const std::deque<sensor_msgs::ImuConstPtr> *imu_queue_shared = nullptr;
+  std::mutex *imu_mutex_shared = nullptr;
+  double last_imu_used_time = -1.0;
 
   // Global prior map + KD‐tree
   CloudXYZIPtr priorMap;
@@ -106,9 +113,19 @@ private:
   double icpThresh = 2.0;
 
   bool icpConverged = false;
-  bool firstCloud = true;
   bool posePublished = false;
+
+  bool firstCloud = true;
   bool icpOnly = true;
+  bool oneShot = true;
+
+  // imu
+  Eigen::Vector3d v_prev = Eigen::Vector3d::Zero();              // velocity at prev frame
+  Eigen::Vector3d v_curr = Eigen::Vector3d::Zero();              // velocity at current frame
+  Eigen::Vector3d ba = Eigen::Vector3d::Zero();                  // accel bias
+  Eigen::Vector3d bg = Eigen::Vector3d::Zero();                  // gyro bias
+  double acc_n = 0.6, acc_w = 0.08, gyr_n = 0.05, gyr_w = 0.003; // default; load from ROS if muốn
+  Eigen::Vector3d gvec = Eigen::Vector3d(0, 0, 9.81);
 
 public:
   // Constructor
@@ -117,7 +134,9 @@ public:
            const mytf &initPose,
            int liteloam_id,
            const ros::NodeHandlePtr &nh_ptr,
-           const std::optional<TimedCloud> &seed_cloud)
+           const std::optional<TimedCloud> &seed_cloud,
+           const std::deque<sensor_msgs::ImuConstPtr> *imu_q_shared,
+           std::mutex *imu_mtx_shared)
       : nh_ptr(nh_ptr),
         priorMap(priorMap),
         kdTreeMap(kdt),
@@ -137,6 +156,7 @@ public:
     pnh.param("icpThresh", icpThresh, icpThresh);
 
     pnh.param("icpOnly", icpOnly, true);
+    pnh.param("oneShot", oneShot, true);
 
     kdTreeMap->setInputCloud(priorMap);
 
@@ -145,8 +165,12 @@ public:
       std::lock_guard<std::mutex> lk(cloud_mutex);
       cloud_queue.push_back(*seed_cloud); // first frame is the matched one
     }
+
+    imu_queue_shared = imu_q_shared;
+    imu_mutex_shared = imu_mtx_shared;
+
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
-    imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
+    // imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
     relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
     alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
@@ -178,7 +202,7 @@ public:
       processThread.join();
 
     lidarCloudSub.shutdown();
-    imuSub.shutdown();
+    // imuSub.shutdown();
     alignedCloudPub.shutdown();
     relocPub.shutdown();
   }
@@ -189,11 +213,11 @@ public:
   int getID() const { return liteloam_id; }
 
 private:
-  void IMUHandler(const sensor_msgs::ImuConstPtr &msg)
-  {
-    std::lock_guard<std::mutex> lk(imu_mutex);
-    imu_queue.push_back(msg);
-  }
+  // void IMUHandler(const sensor_msgs::ImuConstPtr &msg)
+  // {
+  //   std::lock_guard<std::mutex> lk(imu_mutex);
+  //   imu_queue.push_back(msg);
+  // }
 
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
   {
@@ -248,49 +272,56 @@ private:
         vg.filter(*srcFine);
       }
 
-      // 5) collect IMU in (tPrev, tNow]
+      // 5) collect IMU in (tStart, tNow]
       std::vector<sensor_msgs::ImuConstPtr> imuBuf;
+      double used_max_t = -1.0;
+
       {
-        std::lock_guard<std::mutex> lk(imu_mutex);
-        while (!imu_queue.empty())
+        std::lock_guard<std::mutex> lk(*imu_mutex_shared);
+        const double tStart = std::max(tPrev, last_imu_used_time);
+
+        for (const auto &p : *imu_queue_shared)
         {
-          double t = imu_queue.front()->header.stamp.toSec();
-          if (t < tPrev)
-          {
-            imu_queue.pop_front();
+          const double t = p->header.stamp.toSec();
+          if (t <= tStart)
             continue;
-          }
-          if (t <= tNow)
-          {
-            imuBuf.push_back(imu_queue.front());
-            imu_queue.pop_front();
-          }
-          else
+          if (t > tNow)
             break;
+          imuBuf.push_back(p);
+          if (t > used_max_t)
+            used_max_t = t;
         }
       }
 
-      // 6) IMU pre‐integration (cleaned)
+      if (used_max_t > last_imu_used_time)
+        last_imu_used_time = used_max_t;
+
+      // printf("[IMU] samples: %zu, dt: %.3f s\n", imuBuf.size(), tNow - tPrev);
+
+      // 6) IMU pre-integration (minimal)
       if (!imuBuf.empty())
       {
-        static Eigen::Vector3d ba(0, 0, 0), bg(0, 0, 0);
         Eigen::Vector3d a0(imuBuf.front()->linear_acceleration.x,
                            imuBuf.front()->linear_acceleration.y,
                            imuBuf.front()->linear_acceleration.z);
         Eigen::Vector3d g0(imuBuf.front()->angular_velocity.x,
                            imuBuf.front()->angular_velocity.y,
                            imuBuf.front()->angular_velocity.z);
+
         if (!imuPreint)
         {
           imuPreint.reset(new PreintBase(
-              a0, g0, ba, bg,
-              true, 0.6, 0.08,
-              0.05, 0.003,
-              Eigen::Vector3d(0, 0, 9.81),
+              a0, g0, // first sample
+              ba, bg, // current biases
+              true,
+              acc_n, acc_w, // noises
+              gyr_n, gyr_w,
+              gvec, // gravity
               liteloam_id));
         }
         else
         {
+
           imuPreint->repropagate(ba, bg);
         }
 
@@ -306,8 +337,12 @@ private:
           imuPreint->push_back(dti, ai, gi);
         }
       }
+      else
+      {
+        imuPreint.reset(nullptr);
+      }
 
-      // --- 6.5) Predict initial pose using IMU pre-integration ---
+      // // --- 6.5) Predict initial pose using IMU pre-integration ---
       mytf predPose = prevPose;
       if (imuPreint)
       {
@@ -323,7 +358,7 @@ private:
             imuPreint->linearized_bg  // bias for gyroscope
         );
         predPose.pos = prevPose.pos + (prevPose.rot * dp);
-        // predPose.rot = (prevPose.rot * dq).normalized(); // optional
+        predPose.rot = (prevPose.rot * dq).normalized(); // optional
       }
 
       // --- 7) Coarse -> Fine ICP against priorMap ---
@@ -389,7 +424,7 @@ private:
       // 7a) Coarse pass: try multiple yaw initializations
       for (double d : yawOffsets)
       {
-        double yawRad = (predPose.yaw() + d) * M_PI / 180.0;
+        double yawRad = d * M_PI / 180.0;
 
         if (yawRad > M_PI)
           yawRad -= 2.0 * M_PI;
@@ -420,6 +455,7 @@ private:
                liteloam_id);
         // raise flag
         icpConverged = false;
+        running = false;
         continue;
       }
 
@@ -433,6 +469,7 @@ private:
                liteloam_id);
         // raise flag
         icpConverged = false;
+        running = false;
         continue;
       }
 
@@ -447,16 +484,17 @@ private:
       {
 
         printf(KYEL
-               "[LITELOAM %d] ICP fitness: %.4f \n"
+               "[LITELOAM %d] ICP fitness: %.4f IMUBuf: %zu ICP NOT CONVERGED\n"
                "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" RESET,
-               liteloam_id, bestFitness,
-               prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
-               prevPose.yaw(), prevPose.pitch(), prevPose.roll());
+               liteloam_id, bestFitness, imuBuf.size(),
+               predPose.pos.x(), predPose.pos.y(), predPose.pos.z(),
+               predPose.yaw(), predPose.pitch(), predPose.roll());
         icpConverged = false;
+        running = false;
         continue;
       }
 
-      // 8) Build pose & refine with IMU factor
+      // // 8) Build pose & refine with IMU factor
       Eigen::Matrix4d bestTransD = bestTrans.cast<double>();
       mytf finalPose(bestTransD);
       if (finalPose.rot.w() < 0.0)
@@ -464,39 +502,60 @@ private:
 
       if (imuPreint)
       {
-        double pi[7] = {
-            prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
-            prevPose.rot.x(), prevPose.rot.y(),
-            prevPose.rot.z(), prevPose.rot.w()};
-        double pj[7] = {
-            finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
-            finalPose.rot.x(), finalPose.rot.y(),
-            finalPose.rot.z(), finalPose.rot.w()};
-        double vi[3] = {0, 0, 0}, vj[3] = {0, 0, 0};
-        double bai[6] = {0, 0, 0, 0, 0, 0}, baj[6] = {0, 0, 0, 0, 0, 0};
+        // param blocks
+        double pi[7] = {prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
+                        prevPose.rot.x(), prevPose.rot.y(), prevPose.rot.z(), prevPose.rot.w()};
+        double pj[7] = {finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
+                        finalPose.rot.x(), finalPose.rot.y(), finalPose.rot.z(), finalPose.rot.w()};
+        double vi[3] = {v_prev.x(), v_prev.y(), v_prev.z()};
+        double vj[3] = {v_curr.x(), v_curr.y(), v_curr.z()};
+        double bai[6] = {ba.x(), ba.y(), ba.z(), bg.x(), bg.y(), bg.z()};
+        double baj[6] = {ba.x(), ba.y(), ba.z(), bg.x(), bg.y(), bg.z()};
 
         ceres::Problem problem;
-        problem.AddParameterBlock(pi, 7, new PoseLocalParameterization());
+        auto *pose_plus = new PoseLocalParameterization();
+
+        problem.AddParameterBlock(pi, 7, pose_plus);
+        problem.AddParameterBlock(pj, 7, pose_plus);
         problem.AddParameterBlock(vi, 3);
-        problem.AddParameterBlock(bai, 6);
-        problem.AddParameterBlock(pj, 7, new PoseLocalParameterization());
         problem.AddParameterBlock(vj, 3);
+        problem.AddParameterBlock(bai, 6);
         problem.AddParameterBlock(baj, 6);
-        problem.AddResidualBlock(
-            new PreintFactor(imuPreint.get()),
-            nullptr, pi, vi, bai, pj, vj, baj);
+
+        problem.SetParameterBlockConstant(pi);
+        problem.SetParameterBlockConstant(vi);
+        problem.SetParameterBlockConstant(bai);
+
+        for (int k = 0; k < 3; ++k)
+        {
+          problem.SetParameterLowerBound(baj, k, -0.5); // ba
+          problem.SetParameterUpperBound(baj, k, 0.5);
+          problem.SetParameterLowerBound(baj, 3 + k, -0.1); // bg
+          problem.SetParameterUpperBound(baj, 3 + k, 0.1);
+        }
+
+        // Residual IMU
+        ceres::CostFunction *f_preint = new PreintFactor(imuPreint.get());
+        problem.AddResidualBlock(f_preint, nullptr, pi, vi, bai, pj, vj, baj);
 
         ceres::Solver::Options opts;
+        opts.max_num_iterations = 20;
+        opts.max_solver_time_in_seconds = 0.02;
+        opts.linear_solver_type = ceres::DENSE_QR;
         opts.minimizer_progress_to_stdout = false;
+
         ceres::Solver::Summary sum;
         ceres::Solve(opts, &problem, &sum);
 
         finalPose.pos.x() = pj[0];
         finalPose.pos.y() = pj[1];
         finalPose.pos.z() = pj[2];
-        finalPose.rot = Eigen::Quaterniond(
-                            pj[6], pj[3], pj[4], pj[5])
-                            .normalized();
+        finalPose.rot = Eigen::Quaterniond(pj[6], pj[3], pj[4], pj[5]).normalized();
+
+        v_curr = Eigen::Vector3d(vj[0], vj[1], vj[2]);
+
+        ba = Eigen::Vector3d(baj[0], baj[1], baj[2]);
+        bg = Eigen::Vector3d(baj[3], baj[4], baj[5]);
       }
 
       // 9) Publish
@@ -529,12 +588,13 @@ private:
         double pub_ts = ps.header.stamp.toSec();
 
         printf(KGRN
-               "[LITELOAM %d] ICP fitness: %.4f. FC: %s. T_in: %.3f \n"
+               "[LITELOAM %d] ICP fitness: %.4f. FC: %s. T_in: %.3f IMUBuf: %zu\n"
                "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n"
                "Plast: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" RESET,
                liteloam_id, bestFitness,
                printFirst ? "True" : "False",
                ps.header.stamp.toSec(),
+               imuBuf.size(),
                prevPose.pos.x(), prevPose.pos.y(), prevPose.pos.z(),
                prevPose.yaw(), prevPose.pitch(), prevPose.roll(),
                finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
@@ -551,13 +611,15 @@ private:
 
         // raise flag
         posePublished = true;
-        running = false;
+        if (oneShot)
+          running = false;
       }
 
       // 10) update
       firstCloud = false;
       icpConverged = true;
       imuPreint.reset(nullptr);
+      v_prev = v_curr;
       prevPose = finalPose;
     }
 
@@ -598,6 +660,15 @@ private:
 
   std::atomic<bool> active_{true};
   int liteloamNum = 5;
+  bool oneShot = true;
+
+  ros::Subscriber imuSub;
+
+  std::deque<sensor_msgs::ImuConstPtr> imu_queue_shared;
+  std::mutex imu_mutex_shared;
+
+  int imu_max_keep = 12000;
+  double imu_max_age = 30.0;
 
 public:
   ~Relocalization()
@@ -634,7 +705,7 @@ public:
                    loam->getID());
             loam->stop();
           }
-          else if (loam->published())
+          else if (loam->published() && oneShot)
           {
             lidarCloudSub.shutdown();
             ulocSub.shutdown();
@@ -666,7 +737,13 @@ public:
 
     lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &Relocalization::PCHandler, this);
 
-    nh_ptr->param("/liteloamNum", liteloamNum, liteloamNum);
+    nh_ptr->param("imu_max_keep", imu_max_keep, imu_max_keep);
+    nh_ptr->param("imu_max_age", imu_max_age, imu_max_age);
+
+    imuSub = nh_ptr->subscribe("/vn100/imu", 1000, &Relocalization::IMUHandler, this);
+
+    nh_ptr->param("liteloamNum", liteloamNum, liteloamNum);
+    ROS_INFO("[RELOC] Number of liteloam: %d", liteloamNum);
 
     // loadPriorMap
     string prior_map_dir = "";
@@ -677,6 +754,13 @@ public:
     this->kdTreeMap.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
 
     std::string pcd_file = prior_map_dir + "/priormap.pcd";
+
+    if (pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *priorMap) != 0)
+    {
+      ROS_ERROR("[RELOC] Failed to load PCD: %s", pcd_file.c_str());
+      return;
+    }
+
     ROS_INFO("[RELOC] Prebuilt pcd map found, loading...");
 
     pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
@@ -702,6 +786,8 @@ public:
     priorMapReady = true;
 
     ROS_INFO("[RELOC] Prior Map Load Completed \n");
+
+    nh_ptr->param("/oneShot", oneShot, true);
   }
 
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
@@ -713,6 +799,24 @@ public:
     cloud_queue.push_back({cloud, msg->header.stamp});
     if (cloud_queue.size() > 10)
       cloud_queue.pop_front();
+  }
+
+  void IMUHandler(const sensor_msgs::ImuConstPtr &msg)
+  {
+    sensor_msgs::ImuPtr m(new sensor_msgs::Imu(*msg));
+    if (m->header.stamp.isZero())
+      m->header.stamp = ros::Time::now();
+
+    std::lock_guard<std::mutex> lk(imu_mutex_shared);
+    imu_queue_shared.push_back(m);
+
+    while (imu_queue_shared.size() > imu_max_keep)
+      imu_queue_shared.pop_front();
+
+    const double t_now = imu_queue_shared.back()->header.stamp.toSec();
+    while (!imu_queue_shared.empty() &&
+           (t_now - imu_queue_shared.front()->header.stamp.toSec()) > imu_max_age)
+      imu_queue_shared.pop_front();
   }
 
   // Match UWB pose to the LiDAR cloud by NEAREST timestamp (simplified)
@@ -792,7 +896,7 @@ public:
       {
         int newID = static_cast<int>(loamInstances.size());
         auto inst = std::make_shared<LITELOAM>(
-            priorMap, kdTreeMap, start_pose, newID, nh_ptr, std::make_optional(matched_cloud));
+            priorMap, kdTreeMap, start_pose, newID, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
         loamInstances.push_back(inst);
         printf("[RELOC] Created LITELOAM %d (matched ULOC at %f). \n",
                newID, best_pose->header.stamp.toSec());
@@ -805,7 +909,7 @@ public:
           {
             int id = loam->getID();
             loam = std::make_shared<LITELOAM>(
-                priorMap, kdTreeMap, start_pose, id, nh_ptr, std::make_optional(matched_cloud));
+                priorMap, kdTreeMap, start_pose, id, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
             printf("[RELOC] Restarted LITELOAM %d (matched ULOC at %f). \n",
                    id, best_pose->header.stamp.toSec());
             break;

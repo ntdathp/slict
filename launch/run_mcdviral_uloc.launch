@@ -12,9 +12,9 @@
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
       <arg name="data_path"       default="/home/dat/Downloads/data/MCDVIRAL"/>
 
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/> -->
@@ -139,8 +139,9 @@
         <param name="maxcorrFine"         value="3.0" />
         <param name="iterCoarse"          value="10" />
         <param name="iterFine"            value="10" />
-        <param name="icpThresh"           value="2.0" />
-        <param name="icpOnly"             value="true" />
+        <param name="icpThresh"           value="=2.0" />
+        <param name="icpOnly"             value="false" />
+        <param name="oneShot"             value="true" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 

@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Batch runner for MCDVIRAL sequences (with tee):
-- Terminal output is visible AND saved to a single file per sequence: exp_log_dir/<seq>/sequence.log
-- No CSV export and no extra .log from this script beyond sequence.log
-- Safe process-group cleanup; /lastcloud monitor with timeout
+Batch runner for MCDVIRAL sequences:
+- Terminal output only (no log files).
+- No CSV export and no extra .log from this script.
+- Safe process-group cleanup; /lastcloud monitor with timeout.
 """
 
 import os
@@ -24,14 +24,6 @@ LAUNCH_FILE       = "/home/dat/slict_ws/src/slict/launch/run_mcdviral_uloc.launc
 DELAY_BETWEEN     = 5
 LASTCLOUD_TIMEOUT = 20
 ROS_CONSOLE_LEVEL = "WARN"
-
-# Base dir for per-sequence logs (align with your launch arg structure)
-USER_NAME         = os.environ.get("USER", "dat")
-EXP_LOG_BASE      = f"/home/{USER_NAME}/slict_logs/mcdviral"
-
-# If you truly want ONLY one log file (sequence.log),
-# keep this True and make sure nodes in the .launch use output="screen".
-ONLY_ONE_SEQ_LOG  = True
 
 # =====================
 # Globals
@@ -77,44 +69,28 @@ def list_sequence_folders(root: str) -> List[str]:
     return subs
 
 def run_one_sequence(folder_path: str, folder_name: str) -> None:
-    # rosbag pattern for this folder
     bag_pattern = os.path.join(folder_path, "*.bag")
 
-    # exp_log_dir per sequence (match your launch arg)
-    exp_log_dir = os.path.join(EXP_LOG_BASE, folder_name)
-    os.makedirs(exp_log_dir, exist_ok=True)
-    log_path = os.path.join(exp_log_dir, "sequence.log")
-
     print(f"\n=== Processing folder: {folder_name} ===")
-    print(f"exp_log_dir: {exp_log_dir}")
-    print(f"sequence log: {log_path}")
 
-    # Reduce console verbosity but still print to terminal
+    # Reduce console verbosity
     os.environ["ROSCONSOLE_CONFIG_FILE"] = ensure_rosconsole_config(ROS_CONSOLE_LEVEL)
 
-    # If you set ROS_LOG_DIR, nodes with output="log" will write there (extra files).
-    # To keep *only* sequence.log, avoid setting ROS_LOG_DIR and ensure output="screen" in .launch.
-    if not ONLY_ONE_SEQ_LOG:
-        os.environ["ROS_LOG_DIR"] = exp_log_dir
-
-    # ---- Launch ROS app via bash -c with tee so it prints to terminal and writes to file ----
-    # We pass launch args inline; all stdout+stderr are piped to tee.
-    cmd = (
-        f"roslaunch {LAUNCH_FILE} "
-        f"data_path:={DATASET_ROOT} "
-        f"bag_file:={bag_pattern} "
-        f"autorun:=1 "
-        f"exp_log_dir:={exp_log_dir} "
-        f"2>&1 | tee '{log_path}'"
-    )
+    # Launch ROS app directly (no tee, only stdout/stderr to terminal)
+    cmd = [
+        "roslaunch", LAUNCH_FILE,
+        f"data_path:={DATASET_ROOT}",
+        f"bag_file:={bag_pattern}",
+        "autorun:=1"
+    ]
 
     launch_proc = subprocess.Popen(
-        ["bash", "-c", cmd],
+        cmd,
         preexec_fn=os.setsid
     )
     child_procs.append(launch_proc)
 
-    # ---- Monitor /lastcloud with timeout (silent) ----
+    # Monitor /lastcloud with timeout
     monitor_proc = subprocess.Popen(
         ["rostopic", "echo", "-n1", "/lastcloud"],
         stdout=subprocess.DEVNULL,
@@ -131,7 +107,7 @@ def run_one_sequence(folder_path: str, folder_name: str) -> None:
     except subprocess.TimeoutExpired:
         print(f"[WARN] No /lastcloud within {LASTCLOUD_TIMEOUT}s. Aborting this sequence...")
 
-    # ---- Finish or abort gracefully ----
+    # Finish or abort gracefully
     try:
         if not got_lastcloud:
             kill_proc_group_safely(launch_proc, signal.SIGTERM)
@@ -161,7 +137,7 @@ def main():
         return
 
     print(f"Found {len(subfolders)} sequences.")
-    print("Logging mode: terminal output is mirrored to exp_log_dir/<seq>/sequence.log via tee.")
+    print("Logging mode: terminal output only (no log files).")
 
     for folder in subfolders:
         folder_path = os.path.join(DATASET_ROOT, folder)

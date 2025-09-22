@@ -49,6 +49,13 @@ struct TimedCloud
   ros::Time stamp;
 };
 
+static inline double to_ms(const std::chrono::steady_clock::time_point &t0,
+                           const std::chrono::steady_clock::time_point &t1)
+{
+  using namespace std::chrono;
+  return duration_cast<duration<double, std::milli>>(t1 - t0).count();
+}
+
 // For brevity
 typedef sensor_msgs::PointCloud2::ConstPtr rosCloudMsgPtr;
 typedef sensor_msgs::PointCloud2 rosCloudMsg;
@@ -248,6 +255,9 @@ private:
         item = cloud_queue.front();
         cloud_queue.pop_front();
       }
+
+      auto t_frame_start = std::chrono::steady_clock::now();
+
       CloudXYZIPtr raw = item.cloud;
       ros::Time cloudTime = item.stamp;
       double tNow = cloudTime.toSec();
@@ -561,8 +571,14 @@ private:
       // 9) Publish
       if (icpOnly || !firstCloud)
       {
+        auto t_before_publish = std::chrono::steady_clock::now();
+        const double proc_ms = to_ms(t_frame_start, t_before_publish);
+        const ros::Duration proc_dur(proc_ms / 1000.0);
+
+        ros::Time stamp_out = cloudTime + proc_dur;
+  
         geometry_msgs::PoseStamped ps;
-        ps.header.stamp = cloudTime;
+        ps.header.stamp = stamp_out;
         ps.header.frame_id = "map";
         ps.pose.position.x = finalPose.pos.x();
         ps.pose.position.y = finalPose.pos.y();
@@ -573,22 +589,8 @@ private:
         ps.pose.orientation.w = finalPose.rot.w();
         relocPub.publish(ps);
 
-        // RPY for logging
-        double roll = finalPose.roll();
-        double pitch = finalPose.pitch();
-        double yaw = finalPose.yaw();
-
-        double pre_x = prevPose.pos.x();
-        double pre_y = prevPose.pos.y();
-        double pre_z = prevPose.pos.z();
-        double pre_roll = prevPose.roll();
-        double pre_pitch = prevPose.pitch();
-        double pre_yaw = prevPose.yaw();
-
-        double pub_ts = ps.header.stamp.toSec();
-
         printf(KGRN
-               "[LITELOAM %d] ICP fitness: %.4f. FC: %s. T_in: %.3f IMUBuf: %zu\n"
+               "[LITELOAM %d] ICP fitness: %.4f. FC: %s. Stamp: %.3f IMUBuf: %zu\n"
                "Pinit: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n"
                "Plast: %7.2f. %7.2f. %7.2f. YPR: %4.0f. %4.0f. %4.0f.\n" RESET,
                liteloam_id, bestFitness,

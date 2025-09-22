@@ -12,7 +12,7 @@
       <!-- <arg name="data_path"       default="/media/tmn/mySataSSD1/DATASETS/MCDVIRAL/PublishedSequences"/> -->
       <arg name="data_path"       default="/home/dat/data/MCDVIRAL"/>
 
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
@@ -37,7 +37,7 @@
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_day_06/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_day_07/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_day_08/*.bag"/> -->
-      <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_day_09/*.bag"/>
+      <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_day_09/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_night_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_night_02/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/unpublished_sequences/ntu_night_03/*.bag"/> -->
@@ -132,13 +132,13 @@
       <!-- Run the relocalization -->
        <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" required="true" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
-        <param name="liteloamNum"         value="10" />
+        <param name="liteloamNum"         value="15" />
         <param name="leafCoarse"          value="0.4" />
         <param name="leafFine"            value="0.2" />
         <param name="maxcorrCoarse"       value="10.0" />
         <param name="maxcorrFine"         value="3.0" />
-        <param name="iterCoarse"          value="10" />
-        <param name="iterFine"            value="10" />
+        <param name="iterCoarse"          value="15" />
+        <param name="iterFine"            value="15" />
         <param name="icpThresh"           value="1.0" />
         <param name="icpOnly"             value="false" />
         <param name="oneShot"             value="true" />
@@ -177,7 +177,6 @@
       <!-- NTU Day sequences -->
       <arg name="start_time" value="10.0"   if="$(eval 'ntu_day_01' in bag_file)"/>
       <arg name="start_time" value="10.0"   if="$(eval 'ntu_day_06' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_08' in bag_file)"/>
       <arg name="start_time" value="10.0"   if="$(eval 'ntu_day_09' in bag_file)"/>
       <arg name="start_time" value="10.0"    if="$(eval 'ntu_day_10' in bag_file)"/>
 

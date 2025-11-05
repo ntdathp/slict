@@ -576,7 +576,7 @@ private:
         const ros::Duration proc_dur(proc_ms / 1000.0);
 
         ros::Time stamp_out = cloudTime + proc_dur;
-  
+
         geometry_msgs::PoseStamped ps;
         ps.header.stamp = stamp_out;
         ps.header.frame_id = "map";
@@ -689,44 +689,49 @@ public:
   {
     while (ros::ok())
     {
+      bool should_quit = false;
+
       {
         std::lock_guard<std::mutex> lg(loam_mtx);
-
-        // Iterate through all LITELOAM instances
-        for (size_t lidx = 0; lidx < loamInstances.size(); ++lidx)
+        for (auto &loam : loamInstances)
         {
-          auto &loam = loamInstances[lidx];
           if (!loam)
             continue;
 
-          // If one instance has been running too long but not converged, restart
-          if (loam->timeSinceStart() > 10.0 && !loam->loamConverged() &&
-              loam->isRunning())
+          if (loam->timeSinceStart() > 10.0 && !loam->loamConverged() && loam->isRunning())
           {
-            printf("[Relocalization] LITELOAM %d exceeded 10s. Restart... \n",
-                   loam->getID());
+            printf("[Relocalization] LITELOAM %d exceeded 10s. Stop it.\n", loam->getID());
             loam->stop();
           }
           else if (loam->published() && oneShot)
           {
-            lidarCloudSub.shutdown();
-            ulocSub.shutdown();
-
-            std::vector<std::shared_ptr<LITELOAM>> locals;
-            {
-              std::lock_guard<std::mutex> lg(loam_mtx);
-              locals.swap(loamInstances);
-            }
-            for (auto &lm : locals)
-            {
-              if (lm)
-                lm->shutdown();
-            }
-
-            return;
+            should_quit = true;
           }
         }
       }
+
+      if (should_quit)
+      {
+        std::vector<std::shared_ptr<LITELOAM>> locals;
+        {
+          std::lock_guard<std::mutex> lg(loam_mtx);
+          locals.swap(loamInstances);
+        }
+        for (auto &lm : locals)
+          if (lm)
+            lm->shutdown();
+
+        lidarCloudSub.shutdown();
+        ulocSub.shutdown();
+        imuSub.shutdown();
+
+        active_.store(false);
+        ROS_INFO("[Relocalization] All LiteLOAM instances stopped. Shutting down node...");
+
+        ros::requestShutdown();
+        return;
+      }
+
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
@@ -762,10 +767,11 @@ public:
       ROS_ERROR("[RELOC] Failed to load PCD: %s", pcd_file.c_str());
       return;
     }
+    else
+    {
+      ROS_INFO("[RELOC] Prebuilt pcd map found, loading...");
+    }
 
-    ROS_INFO("[RELOC] Prebuilt pcd map found, loading...");
-
-    pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file, *(this->priorMap));
     ROS_INFO("[RELOC] Prior Map (%zu points).", priorMap->size());
 
     double priormap_viz_res = 1;

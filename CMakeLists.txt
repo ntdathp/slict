@@ -29,6 +29,7 @@ find_package(catkin REQUIRED COMPONENTS
   ufomap_ros
   livox_ros_driver
   livox_ros_driver2
+  wildalign_msgs
 )
 
 ## Find 3rd-party packages and libraries
@@ -68,6 +69,7 @@ generate_messages(
   nav_msgs
   sensor_msgs
   geometry_msgs
+  wildalign_msgs
 )
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
@@ -94,6 +96,7 @@ catkin_package(
   sensor_msgs
   message_runtime 
   message_generation
+  wildalign_msgs
 )
 
 ###########

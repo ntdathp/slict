@@ -15,7 +15,7 @@
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/>
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/>   -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_06/*.bag"/> -->
@@ -47,7 +47,7 @@
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_09/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_10/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_11/*.bag"/> -->
-      <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_12/*.bag"/>
+      <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_12/*.bag"/> -->
       
       <!-- Directory to log the bundle adjustment poses, pointclouds, and others-->
       <arg name="seq_name"
@@ -146,16 +146,6 @@
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 
-      <!-- Launch the SyncUWB node -->
-      <node pkg="uloc" name="uwb_sync" type="uwb_sync" required="false" respawn="true" >
-            <param name="use_sim_time" value="false"/>
-      </node>
-
-      <!-- Launch the ModelUWB node -->
-      <node pkg="uloc" name="uloc_model" type="uloc_model.py" required="false" respawn="true">
-            <param name="use_sim_time" value="false"/>
-      </node>
-
       <!-- Run the Estimator -->
       <param name="/prior_map_dir"  type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map"  type="int"    value="$(arg use_prior_map)" />
@@ -173,25 +163,9 @@
             args="-d $(find slict)/launch/mcdviral.rviz" />
 
       <!-- An offset time -->
-      <!-- NTU Day sequences -->
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_01' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_06' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_09' in bag_file)"/>
-      <arg name="start_time" value="0.0"    if="$(eval 'ntu_day_10' in bag_file)"/>
-
-      <!-- NTU Night sequences -->
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_02' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_04' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_10' in bag_file)"/>
-      <arg name="start_time" value="1.0"    if="$(eval 'ntu_night_12' in bag_file)"/>
-
-      <!-- <arg name="start_time" value="20.0"   if="$(eval 'ntu_day_02' in bag_file)"/> -->
 
       <!-- Default fallback -->
-      <arg name="start_time" value="0" if="$(eval 'ntu_day_01' not in bag_file and 'ntu_day_06' not in bag_file
-                                                and 'ntu_day_09' not in bag_file and 'ntu_day_10' not in bag_file
-                                                and 'ntu_night_02' not in bag_file and 'ntu_night_04' not in bag_file and 'ntu_night_10' not in bag_file
-                                                and 'ntu_night_12' not in bag_file and 'ntu_night_13' not in bag_file)"/>
+      <arg name="start_time" value="0">
 
 
       <!-- Play the bag file -->

@@ -70,7 +70,8 @@ private:
   ros::Subscriber lidarCloudSub;
   // ros::Subscriber imuSub;
   ros::Publisher relocPub;
-  ros::Publisher alignedCloudPub;
+
+  std::string lidar_topic_ = "/lastcloud";
 
   // Queues + mutex
   std::deque<TimedCloud> cloud_queue;
@@ -85,7 +86,6 @@ private:
 
   // Global prior map + KD‐tree
   CloudXYZIPtr priorMap;
-  KdFLANNPtr kdTreeMap;
 
   // Thread control
   std::thread processThread;
@@ -108,7 +108,7 @@ private:
   int iterFine = 15;
   double transEps = 1e-6;
   double fitEps = 1e-5;
-  double ransacThresh = 0.05;
+  double ransacThresh = 0.1;
   bool use_recip_corr = false;
 
   double maxcorrCoarse = 10.0;
@@ -118,6 +118,10 @@ private:
   float leafFine = 0.08f;
 
   double icpThresh = 2.0;
+
+  double yaw_step_first = 45.0;
+
+  bool fine_enable = false;
 
   bool icpConverged = false;
   bool posePublished = false;
@@ -137,7 +141,6 @@ private:
 public:
   // Constructor
   LITELOAM(const CloudXYZIPtr &priorMap,
-           const KdFLANNPtr &kdt,
            const mytf &initPose,
            int liteloam_id,
            const ros::NodeHandlePtr &nh_ptr,
@@ -146,7 +149,6 @@ public:
            std::mutex *imu_mtx_shared)
       : nh_ptr(nh_ptr),
         priorMap(priorMap),
-        kdTreeMap(kdt),
         initPose(initPose),
         prevPose(initPose),
         liteloam_id(liteloam_id)
@@ -164,8 +166,10 @@ public:
 
     pnh.param("icpOnly", icpOnly, true);
     pnh.param("oneShot", oneShot, true);
+    pnh.param("yaw_step_first", yaw_step_first, yaw_step_first);
+    pnh.param("fine_enable", fine_enable, fine_enable);
 
-    kdTreeMap->setInputCloud(priorMap);
+    pnh.param<std::string>("lidar_topic", lidar_topic_, "/lastcloud");
 
     if (seed_cloud.has_value())
     {
@@ -176,10 +180,8 @@ public:
     imu_queue_shared = imu_q_shared;
     imu_mutex_shared = imu_mtx_shared;
 
-    lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &LITELOAM::PCHandler, this);
-    // imuSub = nh_ptr->subscribe("/vn100/imu", 500, &LITELOAM::IMUHandler, this);
+    lidarCloudSub = nh_ptr->subscribe("/livox/lidar_ouster", 100, &LITELOAM::PCHandler, this);
     relocPub = nh_ptr->advertise<geometry_msgs::PoseStamped>("/liteloam_pose", 100);
-    alignedCloudPub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/liteloam_aligned_cloud", 1);
 
     startTime = ros::Time::now().toSec();
     running = true;
@@ -208,9 +210,12 @@ public:
     if (processThread.joinable())
       processThread.join();
 
+    {
+      std::lock_guard<std::mutex> lk(cloud_mutex);
+      cloud_queue.clear();
+    }
+
     lidarCloudSub.shutdown();
-    // imuSub.shutdown();
-    alignedCloudPub.shutdown();
     relocPub.shutdown();
   }
 
@@ -220,12 +225,6 @@ public:
   int getID() const { return liteloam_id; }
 
 private:
-  // void IMUHandler(const sensor_msgs::ImuConstPtr &msg)
-  // {
-  //   std::lock_guard<std::mutex> lk(imu_mutex);
-  //   imu_queue.push_back(msg);
-  // }
-
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
   {
     CloudXYZIPtr cloud(new CloudXYZI());
@@ -233,6 +232,12 @@ private:
 
     std::lock_guard<std::mutex> lk(cloud_mutex);
     cloud_queue.push_back({cloud, msg->header.stamp});
+
+    const size_t MAX_CLOUD_QUEUE = 5;
+    while (cloud_queue.size() > MAX_CLOUD_QUEUE)
+    {
+      cloud_queue.pop_front();
+    }
   }
 
   void processBuffer()
@@ -305,8 +310,6 @@ private:
 
       if (used_max_t > last_imu_used_time)
         last_imu_used_time = used_max_t;
-
-      // printf("[IMU] samples: %zu, dt: %.3f s\n", imuBuf.size(), tNow - tPrev);
 
       // 6) IMU pre-integration (minimal)
       if (!imuBuf.empty())
@@ -390,7 +393,7 @@ private:
       std::vector<double> yawOffsets;
       if (firstCloud)
       {
-        for (double d = -180.0; d <= 180.0; d += 30.0)
+        for (double d = -180.0; d <= 180.0; d += yaw_step_first)
           yawOffsets.push_back(d);
       }
       else
@@ -469,28 +472,30 @@ private:
         continue;
       }
 
+      bestTrans = coarse_best_T;
+      bestFitness = coarse_best_fit;
+
       // 7b) Fine pass: tighten distances and iterate more for precision
-      Eigen::Matrix4f T_fine;
-      double fit_fine;
-      if (!run_icp(srcFine, maxcorrFine, iterFine, coarse_best_T, T_fine, fit_fine))
+      if (fine_enable)
       {
-        printf(KYEL
-               "[LITELOAM %d] Fine ICP failed. \n" RESET,
-               liteloam_id);
-        // raise flag
-        icpConverged = false;
-        running = false;
-        continue;
+        Eigen::Matrix4f T_fine;
+        double fit_fine;
+        if (!run_icp(srcFine, maxcorrFine, iterFine, coarse_best_T, T_fine, fit_fine))
+        {
+          printf(KYEL
+                 "[LITELOAM %d] Fine ICP failed. \n" RESET,
+                 liteloam_id);
+          // raise flag
+          icpConverged = false;
+          running = false;
+          continue;
+        }
+
+        bestTrans = T_fine;
+        bestFitness = fit_fine;
       }
 
-      bestTrans = T_fine;
-      bestFitness = fit_fine;
-
-      // Use stricter fitness thresholds to accept only accurate alignments
-      double fitness_threshold = firstCloud
-                                     ? icpThresh
-                                     : icpThresh;
-      if (bestFitness >= fitness_threshold)
+      if (bestFitness >= icpThresh)
       {
 
         printf(KYEL
@@ -602,15 +607,6 @@ private:
                finalPose.pos.x(), finalPose.pos.y(), finalPose.pos.z(),
                finalPose.yaw(), finalPose.pitch(), finalPose.roll());
 
-        sensor_msgs::PointCloud2 outMsg;
-        pcl::PointCloud<PointXYZI> aligned;
-        pcl::transformPointCloud(
-            *srcFine, aligned, finalPose.tfMat().cast<float>());
-        pcl::toROSMsg(aligned, outMsg);
-        outMsg.header.stamp = cloudTime;
-        outMsg.header.frame_id = "map";
-        alignedCloudPub.publish(outMsg);
-
         // raise flag
         posePublished = true;
         if (oneShot)
@@ -640,6 +636,11 @@ private:
   // Subscribers
   ros::Subscriber lidarCloudSub;
   ros::Subscriber ulocSub;
+  ros::Subscriber imuSub;
+
+  std::string lidar_topic_ = "/lastcloud";
+  std::string uwb_topic_ = "/uwb_pose";
+  std::string imu_topic_ = "/vn100/imu";
 
   // Buffer to store recent point clouds and their timestamps
   std::deque<TimedCloud> cloud_queue;
@@ -653,7 +654,6 @@ private:
   ros::Publisher relocPub;
 
   CloudXYZIPtr priorMap;
-  KdFLANNPtr kdTreeMap;
   bool priorMapReady = false;
 
   std::mutex loam_mtx;
@@ -664,13 +664,11 @@ private:
   int liteloamNum = 5;
   bool oneShot = true;
 
-  ros::Subscriber imuSub;
-
   std::deque<sensor_msgs::ImuConstPtr> imu_queue_shared;
   std::mutex imu_mutex_shared;
 
-  int imu_max_keep = 12000;
-  double imu_max_age = 30.0;
+  int imu_max_keep = 1200;
+  double imu_max_age = 20.0;
 
 public:
   ~Relocalization()
@@ -738,16 +736,20 @@ public:
 
   void Initialize()
   {
+    nh_ptr->param<std::string>("lidar_topic", lidar_topic_, lidar_topic_);
+    nh_ptr->param<std::string>("uwb_topic", uwb_topic_, uwb_topic_);
+    nh_ptr->param<std::string>("imu_topic", imu_topic_, imu_topic_);
+
     // ULOC pose subscriber
     ulocSub =
-        nh_ptr->subscribe("/uwb_pose", 100, &Relocalization::ULOCCallback, this);
+        nh_ptr->subscribe(uwb_topic_, 100, &Relocalization::ULOCCallback, this);
 
-    lidarCloudSub = nh_ptr->subscribe("/lastcloud", 100, &Relocalization::PCHandler, this);
+    lidarCloudSub = nh_ptr->subscribe(lidar_topic_, 100, &Relocalization::PCHandler, this);
 
     nh_ptr->param("imu_max_keep", imu_max_keep, imu_max_keep);
     nh_ptr->param("imu_max_age", imu_max_age, imu_max_age);
 
-    imuSub = nh_ptr->subscribe("/vn100/imu", 1000, &Relocalization::IMUHandler, this);
+    imuSub = nh_ptr->subscribe(imu_topic_, 1000, &Relocalization::IMUHandler, this);
 
     nh_ptr->param("liteloamNum", liteloamNum, liteloamNum);
     ROS_INFO("[RELOC] Number of liteloam: %d", liteloamNum);
@@ -758,7 +760,6 @@ public:
     ROS_INFO("[RELOC] priormap_dir: %s", prior_map_dir.c_str());
 
     this->priorMap.reset(new pcl::PointCloud<pcl::PointXYZI>());
-    this->kdTreeMap.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
 
     std::string pcd_file = prior_map_dir + "/priormap.pcd";
 
@@ -774,7 +775,7 @@ public:
 
     ROS_INFO("[RELOC] Prior Map (%zu points).", priorMap->size());
 
-    double priormap_viz_res = 1;
+    double priormap_viz_res = 0.8;
     pcl::UniformSampling<pcl::PointXYZI> downsampler;
     downsampler.setInputCloud(this->priorMap);
     downsampler.setRadiusSearch(priormap_viz_res);
@@ -789,13 +790,11 @@ public:
 
     ROS_INFO("[RELOC] Downsampled Prior Map (%zu points).", priorMap->size());
 
-    // Update kdTree with the new downsampled map
-    this->kdTreeMap->setInputCloud(this->priorMap);
     priorMapReady = true;
 
     ROS_INFO("[RELOC] Prior Map Load Completed \n");
 
-    nh_ptr->param("/oneShot", oneShot, true);
+    nh_ptr->param("oneShot", oneShot, true);
   }
 
   void PCHandler(const sensor_msgs::PointCloud2ConstPtr &msg)
@@ -840,7 +839,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(uloc_mutex);
       uloc_buffer.push_back(msg);
-      if (uloc_buffer.size() > 10000)
+      if (uloc_buffer.size() > 1000)
         uloc_buffer.pop_front();
     }
 
@@ -904,7 +903,7 @@ public:
       {
         int newID = static_cast<int>(loamInstances.size());
         auto inst = std::make_shared<LITELOAM>(
-            priorMap, kdTreeMap, start_pose, newID, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
+            priorMap, start_pose, newID, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
         loamInstances.push_back(inst);
         printf("[RELOC] Created LITELOAM %d (matched ULOC at %f). \n",
                newID, best_pose->header.stamp.toSec());
@@ -917,7 +916,7 @@ public:
           {
             int id = loam->getID();
             loam = std::make_shared<LITELOAM>(
-                priorMap, kdTreeMap, start_pose, id, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
+                priorMap, start_pose, id, nh_ptr, std::make_optional(matched_cloud), &imu_queue_shared, &imu_mutex_shared);
             printf("[RELOC] Restarted LITELOAM %d (matched ULOC at %f). \n",
                    id, best_pose->header.stamp.toSec());
             break;

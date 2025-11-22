@@ -45,9 +45,9 @@
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_06/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_07/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_09/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_10/*.bag"/> -->
+      <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_10/*.bag"/>
       <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_11/*.bag"/> -->
-      <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_12/*.bag"/>
+      <!-- <arg  name="bag_file"  default="/home/dat/data/MCDVIRAL/NTU/unpublished_sequences/ntu_night_12/*.bag"/> -->
       
       <!-- Directory to log the bundle adjustment poses, pointclouds, and others-->
       <arg name="seq_name"
@@ -56,7 +56,7 @@
                       else arg('bag_file').split('/')[-1]))"/>
 
       <!-- Log dir per-sequence -->
-      <arg name="exp_log_dir" default="/home/$(env USER)/slict_logs/mcdviral_05112025/$(arg seq_name)"/>
+      <arg name="exp_log_dir" default="/home/$(env USER)/slict_logs/mcdviral_19112025/$(arg seq_name)"/>
 
 
       <!-- Manual initialization for reloc, comment out the sequence's initial position if you want to use STD for relocalization -->
@@ -133,16 +133,7 @@
       <!-- Run the relocalization -->
        <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
-        <param name="liteloamNum"         value="10" />
-        <param name="leafCoarse"          value="0.4" />
-        <param name="leafFine"            value="0.2" />
-        <param name="maxcorrCoarse"       value="10.0" />
-        <param name="maxcorrFine"         value="3.0" />
-        <param name="iterCoarse"          value="15" />
-        <param name="iterFine"            value="15" />
-        <param name="icpThresh"           value="1.5" />
-        <param name="icpOnly"             value="false" />
-        <param name="oneShot"             value="true" />
+        <rosparam file="$(find slict)/config/multi_reloc_mcdviral.yaml" command="load" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 
@@ -162,11 +153,6 @@
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
       <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
-      <!-- <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"
-            launch-prefix="gdb -ex run - -args"/> -->
-
-      <!-- Run the imu predictor -->
-      <!-- <node pkg="slict" type="slict_imu_odom" name="slict_imu_odom" respawn="true" output="log"/> -->
 
       <!--- Run Rviz-->
       <node pkg="rviz" type="rviz" name="rviz_slam" respawn="true" output="log"
@@ -175,14 +161,14 @@
       <!-- An offset time -->
       <!-- NTU Day sequences -->
       <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_01' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_06' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_day_09' in bag_file)"/>
+      <arg name="start_time" value="10.0"   if="$(eval 'ntu_day_06' in bag_file)"/>
+      <arg name="start_time" value="10.0"   if="$(eval 'ntu_day_09' in bag_file)"/>
       <arg name="start_time" value="0.0"    if="$(eval 'ntu_day_10' in bag_file)"/>
 
       <!-- NTU Night sequences -->
       <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_02' in bag_file)"/>
       <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_04' in bag_file)"/>
-      <arg name="start_time" value="0.0"   if="$(eval 'ntu_night_10' in bag_file)"/>
+      <arg name="start_time" value="20.0"   if="$(eval 'ntu_night_10' in bag_file)"/>
       <arg name="start_time" value="1.0"    if="$(eval 'ntu_night_12' in bag_file)"/>
 
       <!-- <arg name="start_time" value="20.0"   if="$(eval 'ntu_day_02' in bag_file)"/> -->

@@ -1,7 +1,7 @@
 <launch>
 
       <arg name="publish_clock" default="--clock"/>
-      <arg name="autorun" default="1"/>
+      <arg name="autorun" default="0"/>
       <arg name="loop_en" default="0"/>
       <arg name="show_report"   default="0"/>
 
@@ -10,8 +10,14 @@
       <arg name="data_path" default="/home/dat/data/megaparticle"/>
 
 
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_kidnap_a/*.bag"/> -->
-      <arg  name="bag_file"  default="$(arg data_path)/outdoor_kidnap_b/*.bag"/>
+      <arg  name="bag_file"  default="$(arg data_path)/outdoor_kidnap_a/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_kidnap_b/*.bag"/> -->
+
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_hard_01a/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_hard_01b/*.bag"/> -->
+
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_hard_02a/*.bag"/> -->
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/outdoor_hard_02b/*.bag"/> -->
 
       <!-- Enable prior map -->
       <arg name="use_prior_map" default="1"/>
@@ -24,7 +30,8 @@
       <arg name="config_file" value="$(find slict)/config/megaparticle_outdoor.yaml"/>
 
       <!-- Priormap file -->
-      <arg name="prior_map_dir" default="/home/dat/data/megaparticle/priormap"/>
+      <arg name="prior_map_dir" default="/home/dat/data/megaparticle/priormap/outdoor_kidnap"/>
+      <!-- <arg name="prior_map_dir" default="/home/dat/data/megaparticle/priormap/outdoor_hard"/> -->
 
       <!-- Directory to log the bundle adjustment poses, pointclouds, and others-->
       <arg name="exp_log_dir" default="/home/$(env USER)/slict_logs/megaparticle_outdoor"/>
@@ -52,24 +59,29 @@
       </node>
 
       <!-- Run the Estimator -->
-      <!-- <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
+      <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map" type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
       
       <!--- Run Rviz-->
       <node pkg="rviz" type="rviz" name="rviz" respawn="true" output="log"
-            args="-d $(find slict)/launch/blocks2.rviz" />
+            args="-d $(find slict)/launch/megaparticle_outdoor.rviz" />
 
       <!-- Play the bag file -->
       <param name="/use_sim_time" value="false" />
       <arg name="wait_time" value="$(eval use_prior_map*15 + 1)" />
       <node required="false" pkg="rosbag" type="play" name="rosbag_player"
-            args="$(arg publish_clock) $(arg bag_file) -r 0.7 -s 0.0"
+            args="$(arg publish_clock) $(arg bag_file) -r 1.0 -s 0.0"
             launch-prefix="bash -c 'sleep $(arg wait_time); $0 $@' "/>
 
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
       <node pkg="slict" type="odom_to_tf.py" name="odom_to_tf" output="screen" respawn="false"/>
+
+      <!-- <node pkg="slict" type="reloc_pose_to_csv.py" name="reloc_pose_to_csv" output="screen" respawn="false" >    
+            <param name="output_dir" value="/home/dat/data/exp/outdoor_kidnap/reloc_pose_with_priormap" />
+            <param name="csv_name" value="outdoor_kidnap_a_reloc.csv" />
+      </node> -->
 
 </launch>

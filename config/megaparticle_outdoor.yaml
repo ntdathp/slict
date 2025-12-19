@@ -195,7 +195,7 @@ relocalization:
   # Number of keyframe to merge for each reloc check
   kf_merged:                  1
   # For guestimation filtering
-  refine_reloc_tf:            1 
+  refine_reloc_tf:            0 
   reloc_thres:                2
   reloc_timespan:            -1.0
   pose_percentile_thres:      0.7

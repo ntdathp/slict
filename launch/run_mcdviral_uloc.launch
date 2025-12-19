@@ -141,10 +141,10 @@
       <node pkg="uloc" name="uwb_sync" type="uwb_sync" required="false" respawn="true" >
             <param name="use_sim_time" value="false"/>
       </node>
-
       <!-- Launch the ModelUWB node -->
       <node pkg="uloc" name="uloc_model" type="uloc_model.py" required="false" respawn="true">
             <param name="use_sim_time" value="false"/>
+            <remap from="/liteloam_pose"  to="/seed_pose"/>
       </node>
 
       <!-- Run the Estimator -->

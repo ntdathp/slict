@@ -50,20 +50,31 @@
       <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/>
 
       <!-- Run the relocalization -->
-
-
-      <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen" >
+        <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
+
         <rosparam file="$(find slict)/config/multi_reloc_megaparticle_outdoor.yaml" command="load" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 
+
+      <!-- <node pkg="std_detector"
+            type="relocalization_ntu_online"
+            name="relocalization_ntu">
+
+      <rosparam command="load" file="$(find std_detector)/config/config_megaparticle_outdoor.yaml" />
+      <param name="descriptor_file_path"         type="string" value = "/home/dat/data/std_reloc/megaparticle/saved_descriptors_outdoor_kidnap/"/>
+
+      <remap from="/relocalization_pose" to="/uwb_pose"/>
+      </node> -->
+
+
       <!-- Run the Estimator -->
-      <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
+      <!-- <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map" type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
       
       <!--- Run Rviz-->
       <node pkg="rviz" type="rviz" name="rviz" respawn="true" output="log"
@@ -71,17 +82,17 @@
 
       <!-- Play the bag file -->
       <param name="/use_sim_time" value="false" />
-      <arg name="wait_time" value="$(eval use_prior_map*15 + 1)" />
+      <arg name="wait_time" value="$(eval use_prior_map*5 + 1)" />
       <node required="false" pkg="rosbag" type="play" name="rosbag_player"
-            args="$(arg publish_clock) $(arg bag_file) -r 1.0 -s 0.0"
+            args="$(arg publish_clock) $(arg bag_file) -r 1.0"
             launch-prefix="bash -c 'sleep $(arg wait_time); $0 $@' "/>
 
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
       <node pkg="slict" type="odom_to_tf.py" name="odom_to_tf" output="screen" respawn="false"/>
 
-      <!-- <node pkg="slict" type="reloc_pose_to_csv.py" name="reloc_pose_to_csv" output="screen" respawn="false" >    
-            <param name="output_dir" value="/home/dat/data/exp/outdoor_kidnap/reloc_pose_with_priormap" />
+      <node pkg="slict" type="reloc_pose_to_csv.py" name="reloc_pose_to_csv" output="screen" respawn="false" >    
+            <param name="output_dir" value="/home/dat/data/exp/outdoor_kidnap/reloc_pose" />
             <param name="csv_name" value="outdoor_kidnap_a_reloc.csv" />
-      </node> -->
+      </node>
 
 </launch>

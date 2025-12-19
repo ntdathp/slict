@@ -113,6 +113,8 @@
 
 #include "PointToMapAssoc.h"
 
+#include <atomic>
+
 // #include "MapManager.hpp"
 
 // #define SPLINE_N 4
@@ -253,10 +255,18 @@ private:
     double surfel_intsect_rad = 0.5;
     double surfel_min_plnrty = 0.8;
 
-    int MIN_POINTS_VALID = 500;      // fewer points than this -> suspect sensor error / occlusion
-    double MEAN_R_NEAR_THRES = 0.25; // meters
-    double STD_R_SMALL_THRES = 0.2;  // meters
-    double BBOX_SMALL_THRES = 0.2;   // meters
+    int MIN_POINTS_VALID = 500;
+    double MEAN_R_NEAR_THRES = 0.25;
+    double STD_R_SMALL_THRES = 0.2;
+    double BBOX_SMALL_THRES = 0.2;
+
+    std::atomic<double> last_tracking_loss_time;
+
+    bool lidar_blocked_ = false;
+    ros::Time lidar_blocked_start_;
+
+    bool reloc_protection_on_ = false;
+    int reloc_backlog_packets_ = 0;
 
     PredType *commonPred;
 
@@ -468,6 +478,8 @@ public:
     {
 
         program_start_time = ros::Time::now();
+
+        last_tracking_loss_time.store(0.0);
 
         autoexit = GetBoolParam("/autoexit", false);
 
@@ -1106,89 +1118,26 @@ public:
 
     void RelocCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
     {
-        // static bool one_shot = true;
-        // if (!one_shot)
-        //     return;
-        // one_shot = false;
+
+        double time_since_loss = ros::Time::now().toSec() - last_tracking_loss_time.load();
+        if (time_since_loss < 5.0)
+        {
+            printf(KRED "Ignored Reloc Request: System just lost tracking %.1f sec ago. Waiting for Lidar to stabilize...\n" RESET, time_since_loss);
+            return;
+        }
 
         if (reloc_stat == RELOCALIZED)
             return;
 
-        myTf<double> tf_Lprior_L0(*msg);
+        myTf target_pose(*msg);
 
-        printf(KYEL "Received Reloc Pose: %6.3f, %6.3f, %6.3f, %6.3f, %6.3f, %6.3f\n" RESET,
-               tf_Lprior_L0.pos(0), tf_Lprior_L0.pos(1), tf_Lprior_L0.pos(2),
-               tf_Lprior_L0.yaw(), tf_Lprior_L0.pitch(), tf_Lprior_L0.roll());
-
-        if (refine_reloc_tf)
-        {
-            reloc_stat = RELOCALIZING;
-
-            while (!pmLoaded)
-            {
-                printf(KYEL "Waiting for prior map to be done\n" RESET);
-                this_thread::sleep_for(chrono::milliseconds(100));
-            }
-
-            while (KfCloudPose->size() == 0)
-            {
-                printf(KYEL "Waiting for first keyframe to be made\n" RESET);
-                this_thread::sleep_for(chrono::milliseconds(100));
-            }
-
-            // Search for closeby prior keyframes
-            pcl::KdTreeFLANN<PointPose> kdTreePmPose;
-            kdTreePmPose.setInputCloud(pmPose);
-
-            int knn_nbrkf = min(5, (int)pmPose->size());
-            vector<int> knn_idx(knn_nbrkf);
-            vector<float> knn_sq_dis(knn_nbrkf);
-            kdTreePmPose.nearestKSearch((tf_Lprior_L0 * myTf(KfCloudPose->back())).Pose6D(), knn_nbrkf, knn_idx, knn_sq_dis);
-
-            // Create a local map
-            CloudXYZIPtr localMap(new CloudXYZI());
-            for (int i = 0; i < knn_idx.size(); i++)
-                *localMap += *pmFull[knn_idx[i]];
-
-            // Create a cloud matcher
-            CloudMatcher cm(0.1, 0.1);
-
-            // Run ICP to find the relative pose
-            Matrix4f tfm_Lprior_L0;
-            double icpFitness = 0;
-            double icpTime = 0;
-            cm.CheckICP(localMap, KfCloudinW.back(), tf_Lprior_L0.cast<float>().tfMat(), tfm_Lprior_L0,
-                        10, 10, 1.0, icpFitness, icpTime);
-
-            tf_Lprior_L0 = myTf(tfm_Lprior_L0).cast<double>();
-
-            // printf(KGRN "Refine the transform: %9.3f, %9.3f, %9.3f, %9.3f, %9.3f, %9.3f. Fitness: %f. Time: %f\n" RESET,
-            //         tf_Lprior_L0.pos.x(), tf_Lprior_L0.pos.y(), tf_Lprior_L0.pos.z(),
-            //         tf_Lprior_L0.yaw(), tf_Lprior_L0.pitch(), tf_Lprior_L0.roll(),
-            //         icpFitness, icpTime);
-
-            IOAOptions ioaOpt;
-            ioaOpt.init_tf = tf_Lprior_L0;
-            ioaOpt.max_iterations = ioa_max_iter;
-            ioaOpt.show_report = true;
-            ioaOpt.text = "T_Lprior_L0_refined_" + std::to_string(ioa_max_iter);
-            // ioaOpt.fix_rot = fix_rot;
-            // ioaOpt.fix_trans = fix_trans;
-            IOASummary ioaSum;
-            cm.IterateAssociateOptimize(ioaOpt, ioaSum, localMap, KfCloudinW.front());
-
-            tf_Lprior_L0 = ioaSum.final_tf;
-
-            printf(KGRN "Refined the transform: %9.3f, %9.3f, %9.3f, %9.3f, %9.3f, %9.3f. Time: %f\n" RESET,
-                   tf_Lprior_L0.pos.x(), tf_Lprior_L0.pos.y(), tf_Lprior_L0.pos.z(),
-                   tf_Lprior_L0.yaw(), tf_Lprior_L0.pitch(), tf_Lprior_L0.roll(), ioaSum.process_time);
-        }
-
-        // Create an auto exitting scope
         {
             lock_guard<mutex> lg(relocBufMtx);
-            relocBuf.push_back(tf_Lprior_L0);
+            relocBuf.push_back(target_pose);
         }
+
+        printf(KYEL "Received Reloc Request. Queued Target Pose: [%.2f, %.2f, %.2f]\n" RESET,
+               target_pose.pos.x(), target_pose.pos.y(), target_pose.pos.z());
     }
 
     void PublishPriorMap(const ros::TimerEvent &event)
@@ -1214,131 +1163,305 @@ public:
         packet_buf.push_back(msg);
     }
 
-    // bool IsLidarBlocked(const CloudXYZITPtr &cloud) const
-    // {
-    //     const int N = cloud->size();
-    //     if (N == 0)
-    //     {
-    //         // No points at all -> treat as sensor failure / heavy occlusion
-    //         return true;
-    //     }
+    bool IsLidarBlocked(const CloudXYZITPtr &cloud) const
+    {
+        const int N = cloud->size();
+        if (N == 0)
+        {
+            // No points at all -> treat as sensor failure / heavy occlusion
+            return true;
+        }
 
-    //     // Too few points compared to normal -> likely error / occlusion
-    //     if (N < MIN_POINTS_VALID)
-    //     {
-    //         return true;
-    //     }
+        // Too few points compared to normal -> likely error / occlusion
+        if (N < MIN_POINTS_VALID)
+        {
+            return true;
+        }
 
-    //     double sum_r = 0.0;
-    //     double sum_r2 = 0.0;
+        double sum_r = 0.0;
+        double sum_r2 = 0.0;
 
-    //     float min_x = 1e9f, min_y = 1e9f, min_z = 1e9f;
-    //     float max_x = -1e9f, max_y = -1e9f, max_z = -1e9f;
+        float min_x = 1e9f, min_y = 1e9f, min_z = 1e9f;
+        float max_x = -1e9f, max_y = -1e9f, max_z = -1e9f;
 
-    //     for (const auto &p : *cloud)
-    //     {
-    //         double r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-    //         sum_r += r;
-    //         sum_r2 += r * r;
+        for (const auto &p : *cloud)
+        {
+            double r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+            sum_r += r;
+            sum_r2 += r * r;
 
-    //         if (p.x < min_x)
-    //             min_x = p.x;
-    //         if (p.y < min_y)
-    //             min_y = p.y;
-    //         if (p.z < min_z)
-    //             min_z = p.z;
-    //         if (p.x > max_x)
-    //             max_x = p.x;
-    //         if (p.y > max_y)
-    //             max_y = p.y;
-    //         if (p.z > max_z)
-    //             max_z = p.z;
-    //     }
+            if (p.x < min_x)
+                min_x = p.x;
+            if (p.y < min_y)
+                min_y = p.y;
+            if (p.z < min_z)
+                min_z = p.z;
+            if (p.x > max_x)
+                max_x = p.x;
+            if (p.y > max_y)
+                max_y = p.y;
+            if (p.z > max_z)
+                max_z = p.z;
+        }
 
-    //     double mean_r = sum_r / std::max(N, 1);
-    //     double var_r = sum_r2 / std::max(N, 1) - mean_r * mean_r;
-    //     double std_r = var_r > 0.0 ? std::sqrt(var_r) : 0.0;
+        double mean_r = sum_r / std::max(N, 1);
+        double var_r = sum_r2 / std::max(N, 1) - mean_r * mean_r;
+        double std_r = var_r > 0.0 ? std::sqrt(var_r) : 0.0;
 
-    //     double dx = max_x - min_x;
-    //     double dy = max_y - min_y;
-    //     double dz = max_z - min_z;
+        double dx = max_x - min_x;
+        double dy = max_y - min_y;
+        double dz = max_z - min_z;
 
-    //     // Occlusion condition: almost all points are very close + compact bounding box
-    //     bool compact_near =
-    //         (mean_r < MEAN_R_NEAR_THRES && std_r < STD_R_SMALL_THRES) ||
-    //         (dx < BBOX_SMALL_THRES && dy < BBOX_SMALL_THRES && dz < BBOX_SMALL_THRES);
+        // Occlusion condition: almost all points are very close + compact bounding box
+        bool compact_near =
+            (mean_r < MEAN_R_NEAR_THRES && std_r < STD_R_SMALL_THRES) ||
+            (dx < BBOX_SMALL_THRES && dy < BBOX_SMALL_THRES && dz < BBOX_SMALL_THRES);
 
-    //     return compact_near;
-    // }
+        return compact_near;
+    }
 
     bool ProcessData()
     {
+        // Counter to ignore tracking loss checks immediately after reloc
+        int ignore_tracking_loss_frames = 0;
+        // Timestamp of the last relocation
+        double last_reloc_packet_time = -10.0;
+        // Flag to track if we are currently lost
+        bool tracking_lost = false;
+
         while (ros::ok())
         {
             slict::TimeLog tlog;
             TicToc tt_whileloop;
+            TicToc tt_loop;
 
-            // Check for time out to exit the program
+            // Check for timeout
             static TicToc tt_time_out;
-
             static double data_time_out = -1;
             if ((data_time_out != -1) && (tt_time_out.Toc() / 1000.0 - data_time_out) > 20 && (packet_buf.size() == 0) && autoexit)
             {
-                printf(KYEL "Data timeout, Buf: %d. exit!\n" RESET, packet_buf.size());
                 SaveTrajLog();
                 exit(0);
             }
 
-            /* #region STEP 0: Loop if there is no new data ---------------------------------------------------------*/
-
-            TicToc tt_loop;
-
+            /* #region STEP 0: Loop if there is no new data */
             if (packet_buf.empty())
             {
                 this_thread::sleep_for(chrono::milliseconds(1));
                 continue;
             }
+            /* #endregion */
 
-            /* #endregion STEP 0: Loop if there is no new data ------------------------------------------------------*/
-
-            /* #region STEP 1: Extract the data packet --------------------------------------------------------------*/
-
+            /* #region STEP 1: Extract the data packet */
             tt_preopt.Tic();
-
-            TicToc tt_extract;
-
             slict::FeatureCloud::ConstPtr packet;
             {
                 lock_guard<mutex> lock(packet_buf_mtx);
                 packet = packet_buf.front();
                 packet_buf.pop_front();
             }
-
-            // Reset the time out clock
             data_time_out = tt_time_out.Toc() / 1000.0;
+            /* #endregion */
 
-            tt_extract.Toc();
+            // ==========================================================================================
+            // FIX: STEP 1.5 - RELOCALIZATION (OVERWRITE STRATEGY - NO CRASH, NO DRIFT)
+            // ==========================================================================================
+            if (use_prior_map && relocBuf.size() != 0)
+            {
+                myTf target_pose;
+                {
+                    lock_guard<mutex> lg(relocBufMtx);
+                    target_pose = relocBuf.back();
+                    relocBuf.clear();
+                }
 
-            /* #endregion STEP 1: Extract the data packet -----------------------------------------------------------*/
+                // 1. Calculate Delta Transform (For Visualization Correctness)
+                // We need this to shift the visual path (GlobalTraj) and Keyframes
+                Vector3d curr_p = sfPos.back().back();
+                Quaternd curr_q = sfQua.back().back();
+                myTf current_pose(curr_q, curr_p);
+                myTf tf_delta = target_pose * current_pose.inverse();
 
-            /* --- Check LiDAR occlusion before inserting into the pipeline --- */
+                // Accumulate the visual transform
+                tf_Lprior_L0 = tf_delta * tf_Lprior_L0;
 
-            // // Create a temporary cloud for occlusion check
-            // CloudXYZITPtr tmpCloud(new CloudXYZIT());
-            // pcl::fromROSMsg(packet->extracted_cloud, *tmpCloud);
+                printf(KYEL "SYSTEM RELOC (HARD CORRECTION):\n"
+                            " - Target Pose:   [%.2f, %.2f, %.2f]\n"
+                            " - Action: Overwriting state history to Target + Zero Velocity.\n" RESET,
+                       target_pose.pos.x(), target_pose.pos.y(), target_pose.pos.z());
 
-            // // If LiDAR is blocked, skip this frame: no AddNewTimeStep, no IMU, no optimization
-            // if (IsLidarBlocked(tmpCloud))
-            // {
-            //     ROS_WARN_STREAM_THROTTLE(1.0,
-            //                              "[Estimator] LiDAR seems blocked (all points very near/compact). Skip this frame.");
+                // 2. OVERWRITE STATES (FLATTEN STATE)
+                // Instead of shifting the old (drifting) trajectory, we force it to stay still at the Target.
+                Vector3d p_target = target_pose.pos;
+                Quaternd q_target = target_pose.rot;
+                Vector3d v_zero = Vector3d::Zero();
 
-            //     // Optionally publish a flag so other nodes know about the blocked state
-            //     reloc_stat = NOT_RELOCALIZED;
+                // Overwrite Window Buffer States (ss, sf)
+                // We keep the size intact to prevent crashes in loops later
+                for (int i = 0; i < (int)ssPos.size(); ++i)
+                {
+                    for (int j = 0; j < (int)ssPos[i].size(); ++j)
+                    {
+                        ssPos[i][j] = p_target;
+                        ssQua[i][j] = q_target;
+                        ssVel[i][j] = v_zero; // STOP DRIFT
 
-            //     continue;
-            // }
-            /* --- Check LiDAR occlusion before inserting into the pipeline --- */
+                        sfPos[i][j] = p_target;
+                        sfQua[i][j] = q_target;
+                        sfVel[i][j] = v_zero; // STOP DRIFT
+
+                        // Optional: Reset Bias to zero or keep current best estimate
+                        // Resetting to zero is safer if drift was huge
+                        ssBia[i][j].setZero();
+                        sfBia[i][j].setZero();
+                        ssBig[i][j].setZero();
+                        sfBig[i][j].setZero();
+                    }
+                }
+
+                // Overwrite Propagated States (SwPropState)
+                for (int i = 0; i < (int)SwPropState.size(); ++i)
+                {
+                    for (int j = 0; j < (int)SwPropState[i].size(); ++j)
+                    {
+                        for (int k = 0; k < (int)SwPropState[i][j].size(); ++k)
+                        {
+                            SwPropState[i][j].P[k] = p_target;
+                            SwPropState[i][j].Q[k] = q_target;
+                            SwPropState[i][j].V[k] = v_zero; // STOP DRIFT
+                        }
+                    }
+                }
+
+                // 3. Reset Spline
+                // Force the spline to be a flat line at the Target Pose across its entire current time range
+                if (GlobalTraj)
+                {
+                    double t_start = GlobalTraj->minTime();
+                    double t_end = GlobalTraj->maxTime();
+
+                    // Re-initialize spline with target pose
+                    GlobalTraj.reset(new PoseSplineX(SPLINE_N, deltaT));
+                    GlobalTraj->setStartTime(t_start);
+                    GlobalTraj->extendKnotsTo(t_end, target_pose.getSE3());
+                }
+
+                // 4. Transform Visuals (Keyframes)
+                // Keyframes are historical data, so we shift them using Delta to match new map frame
+                if (KfCloudPose)
+                    pcl::transformPointCloud(*KfCloudPose, *KfCloudPose, tf_delta.cast<float>().tfMat());
+
+#pragma omp parallel for num_threads(MAX_THREADS)
+                for (int i = 0; i < (int)KfCloudinW.size(); ++i)
+                {
+                    pcl::transformPointCloud(*KfCloudinW[i], *KfCloudinW[i], tf_delta.cast<float>().tfMat());
+                }
+
+                // 5. Update Solver & Map
+                // Clear solver coefficients because old factors are invalid for the new jumped pose
+                for (int i = 0; i < (int)SwLidarCoef.size(); ++i)
+                {
+                    SwLidarCoef[i].clear();
+                    SwDepVsAssoc[i].clear();
+                }
+
+                mySolver->RelocalizePrior(target_pose.getSE3()); // Update prior factor
+
+                {
+                    lock_guard<mutex> lg(map_mtx);
+                    if (use_ufm)
+                        activeSurfelMap = priorSurfelMapPtr;
+                    else
+                        activeikdtMap = priorikdtMapPtr;
+                    ufomap_version++;
+                }
+                {
+                    lock_guard<mutex> lock(global_map_mtx);
+                    globalMap->clear();
+                }
+
+                // 6. Update Flags & Timers
+                current_ref_frame = "map";
+                reloc_stat = RELOCALIZED;
+                last_tracking_loss_time.store(0.0);
+                last_reloc_packet_time = packet->header.stamp.toSec();
+                ignore_tracking_loss_frames = 50; // Enable grace period
+
+                // 7. Flush Buffer
+                // Remove old packets accumulated while Lidar was blocked
+                {
+                    lock_guard<mutex> lock(packet_buf_mtx);
+                    int dropped = packet_buf.size();
+                    packet_buf.clear();
+                    printf(KYEL "Flushed %d backlog packets.\n" RESET, dropped);
+                }
+
+                tracking_lost = false;
+
+                // IMPORTANT: DO NOT CONTINUE.
+                // We kept the buffer structures (SwTimeStep) intact but overwrote their values.
+                // So we can process the current 'packet' immediately to resume odometry continuity.
+            }
+            // ==========================================================================================
+
+            /* --- Check LiDAR occlusion --- */
+            CloudXYZITPtr tmpCloud(new CloudXYZIT());
+            pcl::fromROSMsg(packet->extracted_cloud, *tmpCloud);
+
+            // Logic Grace Period
+            double time_diff = packet->header.stamp.toSec() - last_reloc_packet_time;
+            bool in_grace_period = (time_diff > 0 && time_diff < 3.0);
+
+            if (ignore_tracking_loss_frames > 0)
+            {
+                ignore_tracking_loss_frames--;
+                in_grace_period = true;
+            }
+
+            bool is_blocked = IsLidarBlocked(tmpCloud);
+
+            if (!in_grace_period && is_blocked)
+            {
+                if (!tracking_lost)
+                {
+                    ROS_WARN_THROTTLE(1.0, KYEL "[Estimator] Tracking Loss detected! Emergency Brake Active..." RESET);
+                    last_tracking_loss_time.store(ros::Time::now().toSec());
+                }
+
+                tracking_lost = true;
+                if (reloc_stat == RELOCALIZED)
+                    reloc_stat = NOT_RELOCALIZED;
+
+                // ====================================================
+                // EMERGENCY BRAKE: Force Velocity to 0 while lost
+                // ====================================================
+                // This prevents the robot from drifting to Z = -2000m
+                Vector3d v_zero = Vector3d::Zero();
+                for (int i = 0; i < WINDOW_SIZE; i++)
+                {
+                    for (int j = 0; j < N_SUB_SEG; j++)
+                    {
+                        ssVel[i][j] = v_zero;
+                        sfVel[i][j] = v_zero;
+                    }
+                }
+                for (int i = 0; i < (int)SwPropState.size(); ++i)
+                {
+                    for (int j = 0; j < (int)SwPropState[i].size(); ++j)
+                    {
+                        for (int k = 0; k < (int)SwPropState[i][j].size(); ++k)
+                        {
+                            SwPropState[i][j].V[k] = v_zero;
+                        }
+                    }
+                }
+            }
+            else if (!is_blocked && tracking_lost)
+            {
+                ROS_INFO_THROTTLE(1.0, KGRN "[Estimator] LiDAR recovered. Waiting for Reloc Pose..." RESET);
+                // We stay in tracking_lost state until a reloc pose arrives
+            }
+            /* --- Check LiDAR occlusion --- */
 
             /* #region STEP 2: Initialize orientation and Map -------------------------------------------------------*/
 
@@ -1416,11 +1539,7 @@ public:
                 auto &imuSubSeq = SwImuBundle.back()[i];
                 auto &subSegment = SwTimeStep.back()[i];
 
-                // ASSUMPTION: IMU data is not interrupted (any sub-segment should have IMU data), can be relaxed ?
-                // printf("Step: %2d / %2d. imuSubSeq.size(): %d\n", i, SwImuBundle.back().size(), imuSubSeq.size());
                 ROS_ASSERT(!imuSubSeq.empty());
-
-                // ASSUMPTION: an IMU sample is interpolated at each segment's start and end point
                 ROS_ASSERT_MSG(imuSubSeq.front().t == subSegment.start_time && imuSubSeq.back().t == subSegment.final_time,
                                "IMU Time: %f, %f. Seg. Time: %f, %f\n",
                                imuSubSeq.front().t, imuSubSeq.back().t, subSegment.start_time, subSegment.final_time);
@@ -1432,7 +1551,6 @@ public:
                 sfPos.back()[i] = SwPropState.back()[i].P.back();
                 sfVel.back()[i] = SwPropState.back()[i].V.back();
 
-                // Initialize start state of next segment with the final propogated state in the previous segment
                 if (i <= SwImuBundle.back().size() - 2)
                 {
                     ssQua.back()[i + 1] = sfQua.back()[i];
@@ -1451,13 +1569,10 @@ public:
 
             static int last_updated_knot = -1;
 
-            // Initialize the spline knots by the propagation value
             int baseKnot = GlobalTraj->computeTIndex(SwPropState.back().front().t[0]).second + 1;
             for (int knot_idx = baseKnot; knot_idx < GlobalTraj->numKnots(); knot_idx++)
             {
-                // Initialize by linear interpolation
                 double knot_time = GlobalTraj->getKnotTime(knot_idx);
-                // Find the propagated pose
                 for (int seg_idx = 0; seg_idx < SwPropState.size(); seg_idx++)
                 {
                     for (int subseg_idx = 0; subseg_idx < SwPropState.back().size(); subseg_idx++)
@@ -1470,10 +1585,8 @@ public:
                     }
                 }
 
-                // Initialize by copying the previous control point
                 if (GlobalTraj->getKnotTime(knot_idx) >= GlobalTraj->maxTime() || GlobalTraj->getKnotTime(knot_idx) >= SwPropState.back().back().t.back())
                 {
-                    // GlobalTraj->setKnot(SwPropState.back().back().getTf(knot_time, false).getSE3(), knot_idx);
                     GlobalTraj->setKnot(GlobalTraj->getKnot(knot_idx - 1), knot_idx);
                     continue;
                 }
@@ -1542,14 +1655,12 @@ public:
                     break;
                 }
 
-                // Check the timing
                 tt.Toc();
                 t_deskew += myprintf("#%d: %3.1f, ", i, tt.GetLastStop());
                 tt_deskew += tt.GetLastStop();
             }
 
             t_deskew = myprintf("deskew: %3.1f, ", tt_deskew) + t_deskew;
-
             tlog.t_desk.push_back(tt_deskew);
 
             /* #endregion STEP 6: DESKEW the pointcloud -------------------------------------------------------------*/
@@ -1569,17 +1680,13 @@ public:
                 AssociateCloudWithMap(*activeSurfelMap, activeikdtMap, mytf(sfQua[i].back(), sfPos[i].back()),
                                       SwCloud[i], SwCloudDskDS[i], SwLidarCoef[i], SwDepVsAssoc[i]);
 
-                // Check the timing
                 tt.Toc();
                 t_assoc += myprintf("#%d: %3.1f, ", i, tt.GetLastStop());
                 tt_assoc += tt.GetLastStop();
             }
 
             t_assoc = myprintf("assoc: %3.1f, ", tt_assoc) + t_assoc;
-
             tlog.t_assoc.push_back(tt_assoc);
-
-            // find_new_node = false;
 
             /* #endregion STEP 7: Associate scan with map -----------------------------------------------------------*/
 
@@ -1593,7 +1700,6 @@ public:
             for (auto &report : optreport)
                 report.OptNum = optNum;
 
-            // Update the time check
             tlog.OptNum = optNum;
             tlog.header.stamp = ros::Time(SwTimeStep.back().back().final_time);
 
@@ -1602,20 +1708,12 @@ public:
             int outer_iter = max_outer_iters;
             while (true)
             {
-                // Decrement outer interation counter
                 outer_iter--;
-
-                // Prepare a report
                 slict::OptStat &report = optreport[outer_iter];
 
-                // Calculate the downsampling rate at each depth
                 makeDVAReport(SwDepVsAssoc, DVA, total_lidar_coef, DVAReport);
                 lidar_ds_rate = (max_lidar_factor == -1 ? 1 : max(1, (int)std::floor((double)total_lidar_coef / max_lidar_factor)));
 
-                // if(threadFitSpline.joinable())
-                //     threadFitSpline.join();
-
-                // Create a local spline to store the new knots, isolating the poses from the global trajectory
                 PoseSplineX LocalTraj(SPLINE_N, deltaT);
                 int swBaseKnot = GlobalTraj->computeTIndex(SwImuBundle[0].front().front().t).second;
                 int swNextBase = GlobalTraj->computeTIndex(SwImuBundle[1].front().front().t).second;
@@ -1624,12 +1722,11 @@ public:
                 static map<int, int> curr_knot_x;
 
                 double swStartTime = GlobalTraj->getKnotTime(swBaseKnot);
-                double swFinalTime = SwTimeStep.back().back().final_time - 1e-3; // Add a small offset to avoid localtraj having extra knots due to rounding error
+                double swFinalTime = SwTimeStep.back().back().final_time - 1e-3;
 
                 LocalTraj.setStartTime(swStartTime);
                 LocalTraj.extendKnotsTo(swFinalTime, SE3d());
 
-                // Copy the knots value from global to local traj
                 for (int knot_idx = swBaseKnot; knot_idx < GlobalTraj->numKnots(); knot_idx++)
                 {
                     if ((knot_idx - swBaseKnot) > LocalTraj.numKnots() - 1)
@@ -1637,34 +1734,28 @@ public:
                     LocalTraj.setKnot(GlobalTraj->getKnot(knot_idx), knot_idx - swBaseKnot);
                 }
 
-                // Check insantity
                 ROS_ASSERT_MSG(LocalTraj.numKnots() <= GlobalTraj->numKnots() - swBaseKnot,
                                "Knot count not matching %d, %d, %d\n",
                                LocalTraj.numKnots(), GlobalTraj->numKnots() - swBaseKnot, swBaseKnot);
 
-                // Accounting for the knot idx for marginalization
                 curr_knot_x.clear();
                 for (int knot_idx = 0; knot_idx < LocalTraj.numKnots(); knot_idx++)
                     curr_knot_x[knot_idx + swBaseKnot] = knot_idx;
 
                 TicToc tt_feaSel;
-                // Select the features
                 vector<ImuIdx> imuSelected;
                 vector<lidarFeaIdx> featureSelected;
                 FactorSelection(LocalTraj, imuSelected, featureSelected);
-                // Visualize the selection
                 PublishAssocCloud(featureSelected, SwLidarCoef);
                 tt_feaSel.Toc();
 
                 tlog.t_feasel.push_back(tt_feaSel.GetLastStop());
 
-                // Optimization
                 lioop_times_report = "";
                 LIOOptimization(report, lioop_times_report, LocalTraj,
                                 prev_knot_x, curr_knot_x, swNextBase, outer_iter,
                                 imuSelected, featureSelected, tlog);
 
-                // Load the knot values back to the global traj
                 for (int knot_idx = 0; knot_idx < LocalTraj.numKnots(); knot_idx++)
                 {
                     GlobalTraj->setKnot(LocalTraj.getKnot(knot_idx), knot_idx + swBaseKnot);
@@ -1674,16 +1765,11 @@ public:
                 /* #region Post optimization ------------------------------------------------------------------------*/
 
                 TicToc tt_posproc;
-
                 string pstop_times_report = "pp: ";
 
-                // Break the loop early if the optimization finishes quickly.
                 bool redo_optimization = true;
                 if (outer_iter <= 0 || (outer_iter <= max_outer_iters - 2 && report.JK < report.J0 && (report.J0 - report.JK) / report.J0 < dj_thres))
                     redo_optimization = false;
-
-                // int PROP_THREADS = std::min(WINDOW_SIZE, MAX_THREADS);
-                // Redo propagation
 
                 TicToc tt_prop_;
 
@@ -1709,12 +1795,11 @@ public:
 
                 TicToc tt_deskew_;
 
-                // Redo the deskew
                 if (lite_redeskew)
-                    if (redo_optimization) // If optimization is gonna be done again, deskew with light method
+                    if (redo_optimization)
                         for (int i = first_round ? 0 : max(0, WINDOW_SIZE - reassociate_steps); i < WINDOW_SIZE; i++)
                             Redeskew(SwPropState[i], SwTimeStep[i], SwCloud[i], SwCloudDskDS[i]);
-                    else // If optimization is not gonna be done again, deskew with heavy method
+                    else
                         for (int i = first_round ? 0 : max(0, WINDOW_SIZE - reassociate_steps); i < WINDOW_SIZE; i++)
                             DeskewByImu(SwPropState[i], SwTimeStep[i], SwCloud[i], SwCloudDsk[i], SwCloudDskDS[i], assoc_spacing);
                 else
@@ -1726,18 +1811,13 @@ public:
 
                 TicToc tt_assoc_;
 
-                // Redo the map association
                 for (int i = first_round ? 0 : max(0, WINDOW_SIZE - reassociate_steps); i < WINDOW_SIZE; i++)
                 {
-                    // TicToc tt_assoc;
-
                     lock_guard<mutex> lg(map_mtx);
                     SwDepVsAssoc[i].clear();
                     SwLidarCoef[i].clear();
                     AssociateCloudWithMap(*activeSurfelMap, activeikdtMap, mytf(sfQua[i].back(), sfPos[i].back()),
                                           SwCloud[i], SwCloudDskDS[i], SwLidarCoef[i], SwDepVsAssoc[i]);
-
-                    // printf("Assoc Time: %f\n", tt_assoc.Toc());
                 }
 
                 tlog.t_assoc.push_back(tt_assoc_.Toc());
@@ -1749,7 +1829,6 @@ public:
 
                 /* #region Write the report -------------------------------------------------------------------------*/
 
-                // Update the report
                 report.header.stamp = ros::Time(SwTimeStep.back().back().final_time);
                 report.OptNumSub = outer_iter + 1;
                 report.keyfrm = KfCloudPose->size();
@@ -1770,12 +1849,6 @@ public:
                 else
                     report.tmapimg = -1;
 
-                Vector3d eul_est = Util::Quat2YPR(Quaternd(report.Qest.w, report.Qest.x, report.Qest.y, report.Qest.z));
-                Vector3d eul_imu = Util::Quat2YPR(Quaternd(report.Qest.w, report.Qest.x, report.Qest.y, report.Qest.z));
-                Vector3d Vest = Vector3d(report.Vest.x, report.Vest.y, report.Vest.z);
-                Vector3d Vimu = Vector3d(report.Vimu.x, report.Vimu.y, report.Vimu.z);
-
-                /* #region */
                 printout +=
                     show_report ? myprintf("Op#.Oi#: %04d. %2d /%2d. Itr: %2d / %2d. trun: %.3f. %s. RL: %d\n"
                                            "tpo: %4.0f. tfs: %4.0f. tbc: %4.0f. tslv: %4.0f / %4.0f. tpp: %4.0f. tlp: %4.0f. tufm: %4.0f. tlpBa: %4.0f.\n"
@@ -1784,69 +1857,41 @@ public:
                                            "Map: %d\n"
                                            "J0:  %15.3f, Ldr: %9.3f. IMU: %9.3f. Prp: %9.3f. Vel: %9.3f.\n"
                                            "JK:  %15.3f, Ldr: %9.3f. IMU: %9.3f. Prp: %9.3f. Vel: %9.3f.\n"
-                                           //  "BiaG: %7.2f, %7.2f, %7.2f. BiaA: %7.2f, %7.2f, %7.2f. (%7.2f, %7.2f, %7.2f), (%7.2f, %7.2f, %7.2f)\n"
-                                           //  "Eimu: %7.2f, %7.2f, %7.2f. Pimu: %7.2f, %7.2f, %7.2f. Vimu: %7.2f, %7.2f, %7.2f.\n"
-                                           //  "Eest: %7.2f, %7.2f, %7.2f. Pest: %7.2f, %7.2f, %7.2f. Vest: %7.2f, %7.2f, %7.2f. Spd: %.3f. Dif: %.3f.\n"
                                            "DVA:  %s\n",
-                                           // Time and iterations
                                            report.OptNum, report.OptNumSub, max_outer_iters,
                                            report.iters, max_iterations,
                                            report.trun,
                                            reloc_stat == RELOCALIZED ? KYEL "RELOCALIZED!" RESET : "",
                                            relocBuf.size(),
-                                           report.tpreopt,             // time preparing before lio optimization
-                                           tt_fitspline.GetLastStop(), // time to fit the spline
-                                           report.tbuildceres,         // time building the ceres problem before solving
-                                           report.tslv,                // time solving ceres problem
-                                           t_slv_budget,               // time left to solve the problem
-                                           report.tpostopt,            // time for post processing
-                                           report.tlp,                 // time packet was extracted up to now
-                                           report.tmapimg,             // time of last insertion of data to ufomap
-                                           tt_loopBA.GetLastStop(),    // time checking loop closure
-                                           // Sliding window stats
+                                           report.tpreopt,
+                                           tt_fitspline.GetLastStop(),
+                                           report.tbuildceres,
+                                           report.tslv,
+                                           t_slv_budget,
+                                           report.tpostopt,
+                                           report.tlp,
+                                           report.tmapimg,
+                                           tt_loopBA.GetLastStop(),
                                            report.surfFactors, max_lidar_factor, total_lidar_coef,
                                            report.imuFactors, report.propFactors, report.velFactors,
                                            report.mfcBuf = packet_buf.size(), report.keyfrm, report.margPerc * 100, report.kfcand,
-                                           //  active_knots.begin()->first, active_knots.rbegin()->first,
                                            report.fixed_knot_min, report.fixed_knot_max,
                                            use_ufm ? activeSurfelMap->size() : activeikdtMap->size(),
-                                           // Optimization initial costs
                                            report.J0, report.J0Surf, report.J0Imu, report.J0Prop, report.J0Vel,
-                                           // Optimization final costs
                                            report.JK, report.JKSurf, report.JKImu, report.JKProp, report.JKVel,
-                                           // Bias Estimate
-                                           //  ssBig.back().back().x(), ssBig.back().back().y(), ssBig.back().back().z(),
-                                           //  ssBia.back().back().x(), ssBia.back().back().y(), ssBia.back().back().z(),
-                                           //  BG_BOUND(0), BG_BOUND(1), BG_BOUND(2), BA_BOUND(0), BA_BOUND(1), BA_BOUND(2),
-                                           // Pose Estimate from propogation
-                                           //  eul_imu.x(), eul_imu.y(), eul_imu.z(),
-                                           //  report.Pimu.x, report.Pimu.y, report.Pimu.z,
-                                           //  report.Vimu.x, report.Vimu.y, report.Vimu.z,
-                                           // Pose Estimate from Optimization
-                                           //  eul_est.x(), eul_est.y(), eul_est.z(),
-                                           //  report.Pest.x, report.Pest.y, report.Pest.z,
-                                           //  report.Vest.x, report.Vest.y, report.Vest.z,
-                                           //  Vest.norm(), (Vest - Vimu).norm(),
-                                           // Report on the assocations at different scales
                                            DVAReport.c_str())
                                 : "\n";
-                /* #endregion */
 
-                // Attach the report from loop closure
-                /* #region */
                 printout +=
                     myprintf("%sBA# %4d. LoopEn: %d. LastFn: %6.3f. Itr: %3d. tslv: %4.0f. trbm: %4.0f. Ftr: RP: %4d. Lp: %4d.\n"
                              "J:  %6.3f -> %6.3f. rP: %6.3f -> %6.3f. Lp: %6.3f -> %6.3f\n" RESET,
-                             // Stats
                              baReport.turn % 2 == 0 ? KBLU : KGRN, baReport.turn, loop_en, lastICPFn,
                              baReport.pgopt_iter, baReport.pgopt_time, baReport.rebuildmap_time,
                              baReport.factor_relpose, baReport.factor_loop,
-                             // Costs
                              baReport.J0, baReport.JK,
                              baReport.J0_relpose, baReport.JK_relpose,
                              baReport.J0_loop, baReport.JK_loop);
 
-                // Show the preop times
                 string preop_times_report = "";
                 if (GetBoolParam("/show_preop_times", false))
                 {
@@ -1860,13 +1905,9 @@ public:
                 }
                 printout += preop_times_report + pstop_times_report + "\n";
                 printout += lioop_times_report + "\n";
-                /* #endregion */
 
-                // Publish the optimization results
                 static ros::Publisher opt_stat_pub = nh_ptr->advertise<slict::OptStat>("/opt_stat", 1);
                 opt_stat_pub.publish(report);
-
-                /* #endregion Write the report ----------------------------------------------------------------------*/
 
                 if (!redo_optimization)
                 {
@@ -1901,15 +1942,8 @@ public:
 
             /* #region STEP 11: Report and Vizualize ----------------------------------------------------------------*/
 
-            // Export the summaries
             if (show_report)
                 cout << printout;
-
-            // std::thread vizSwTrajThread(&Estimator::VisualizeSwTraj, this);
-            // std::thread vizSwLoopThread(&Estimator::VisualizeLoop, this);
-
-            // vizSwTrajThread.join();
-            // vizSwLoopThread.join();
 
             VisualizeSwTraj();
             VisualizeLoop();
@@ -1918,136 +1952,16 @@ public:
 
             /* #region STEP 12: Slide window forward ----------------------------------------------------------------*/
 
-            // Slide the window forward
             SlideWindowForward();
 
             /* #endregion STEP 12: Slide window forward -------------------------------------------------------------*/
-
-            /* #region STEP 13: Transform everything to prior map frame ---------------------------------------------*/
-
-            // Simulated behaviours
-            if (use_prior_map && reloc_stat != RELOCALIZED && relocBuf.size() != 0)
-            {
-                // Extract the relocalization pose
-                {
-                    lock_guard<mutex> lg(relocBufMtx);
-                    tf_Lprior_L0 = relocBuf.back();
-                }
-
-                // Move all states to the new coordinates
-                Quaternd q_Lprior_L0 = tf_Lprior_L0.rot;
-                Vector3d p_Lprior_L0 = tf_Lprior_L0.pos;
-
-                // Transform the traj to the prior map
-                for (int knot_idx = 0; knot_idx < GlobalTraj->numKnots(); knot_idx++)
-                    GlobalTraj->setKnot(tf_Lprior_L0.getSE3() * GlobalTraj->getKnot(knot_idx), knot_idx);
-
-                // Convert all the IMU poses to the prior map
-                for (int i = 0; i < SwPropState.size(); i++)
-                {
-                    for (int j = 0; j < SwPropState[i].size(); j++)
-                    {
-                        for (int k = 0; k < SwPropState[i][j].size(); k++)
-                        {
-                            SwPropState[i][j].Q[k] = q_Lprior_L0 * SwPropState[i][j].Q[k];
-                            SwPropState[i][j].P[k] = q_Lprior_L0 * SwPropState[i][j].P[k] + p_Lprior_L0;
-                            SwPropState[i][j].V[k] = q_Lprior_L0 * SwPropState[i][j].V[k];
-                        }
-                    }
-                }
-
-                for (int i = 0; i < ssQua.size(); i++)
-                {
-                    for (int j = 0; j < ssQua[i].size(); j++)
-                    {
-                        ssQua[i][j] = q_Lprior_L0 * ssQua[i][j];
-                        ssPos[i][j] = q_Lprior_L0 * ssPos[i][j] + p_Lprior_L0;
-                        ssVel[i][j] = q_Lprior_L0 * ssVel[i][j];
-
-                        sfQua[i][j] = q_Lprior_L0 * sfQua[i][j];
-                        sfPos[i][j] = q_Lprior_L0 * sfPos[i][j] + p_Lprior_L0;
-                        sfVel[i][j] = q_Lprior_L0 * sfVel[i][j];
-                    }
-                }
-
-                // Keyframe poses
-                pcl::transformPointCloud(*KfCloudPose, *KfCloudPose, tf_Lprior_L0.cast<float>().tfMat());
-
-                // Clear the coef of previous steps
-                for (int i = 0; i < SwLidarCoef.size(); i++)
-                {
-                    SwLidarCoef[i].clear();
-                    SwDepVsAssoc[i].clear();
-                }
-
-                // Update the priors of the prior factor
-                mySolver->RelocalizePrior(tf_Lprior_L0.getSE3());
-
-                // Change the map
-                {
-                    lock_guard<mutex> lg(map_mtx);
-
-                    if (use_ufm)
-                        activeSurfelMap = priorSurfelMapPtr;
-                    else
-                        activeikdtMap = priorikdtMapPtr;
-
-                    ufomap_version++;
-                }
-
-// Clear the previous keyframe
-#pragma omp parallel for num_threads(MAX_THREADS)
-                for (int i = 0; i < KfCloudPose->size(); i++)
-                    pcl::transformPointCloud(*KfCloudinW[i], *KfCloudinW[i], tf_Lprior_L0.cast<float>().tfMat());
-
-                // Add keyframe pointcloud to global map
-                {
-                    lock_guard<mutex> lock(global_map_mtx);
-                    globalMap->clear();
-                }
-
-                // Log down the relocalization information
-                Matrix4d tfMat_L0_Lprior = tf_Lprior_L0.inverse().tfMat();
-                Matrix4d tfMat_Lprior_L0 = tf_Lprior_L0.tfMat();
-
-                ofstream prior_fwtf_file;
-                prior_fwtf_file.open((log_dir + string("/tf_L0_Lprior.txt")).c_str());
-                prior_fwtf_file << std::fixed << std::setprecision(9);
-                prior_fwtf_file << tfMat_L0_Lprior;
-                prior_fwtf_file.close();
-
-                ofstream prior_rvtf_file;
-                prior_rvtf_file.open((log_dir + string("/tf_Lprior_L0.txt")).c_str());
-                prior_rvtf_file << std::fixed << std::setprecision(9);
-                prior_rvtf_file << tfMat_Lprior_L0;
-                prior_rvtf_file.close();
-
-                ofstream reloc_info_file;
-                reloc_info_file.open((log_dir + string("/reloc_info.csv")).c_str());
-                reloc_info_file << std::fixed << std::setprecision(9);
-                reloc_info_file << "Time, "
-                                << "TF_Lprior_L0.x, TF_Lprior_L0.y, TF_Lprior_L0.z, "
-                                << "TF_Lprior_L0.qx, TF_Lprior_L0.qy, TF_Lprior_L0.qz, TF_Lprior_L0.qw, "
-                                << "TF_Lprior_L0.yaw, TF_Lprior_L0.pitch, TF_Lprior_L0.roll" << endl;
-                reloc_info_file << SwTimeStep.back().back().final_time << ", "
-                                << tf_Lprior_L0.pos.x() << ", " << tf_Lprior_L0.pos.y() << ", " << tf_Lprior_L0.pos.z() << ", "
-                                << tf_Lprior_L0.rot.x() << ", " << tf_Lprior_L0.rot.y() << ", " << tf_Lprior_L0.rot.z() << ", " << tf_Lprior_L0.rot.w() << ", "
-                                << tf_Lprior_L0.yaw() << ", " << tf_Lprior_L0.pitch() << ", " << tf_Lprior_L0.roll() << endl;
-                reloc_info_file.close();
-
-                // Change the frame of reference
-                current_ref_frame = "map";
-
-                reloc_stat = RELOCALIZED;
-            }
-
-            /* #endregion STEP 13: Transform everything to prior map frame ------------------------------------------*/
 
             // Publish the loop time
             tlog.t_loop = tt_whileloop.Toc();
             static ros::Publisher tlog_pub = nh_ptr->advertise<slict::TimeLog>("/time_log", 100);
             tlog_pub.publish(tlog);
         }
+        return true;
     }
 
     void PublishAssocCloud(vector<lidarFeaIdx> &featureSelected, deque<vector<LidarCoef>> &SwLidarCoef)
@@ -2277,6 +2191,13 @@ public:
                      const CloudXYZITPtr &inCloud, CloudXYZIPtr &outCloud, CloudXYZIPtr &outCloudDS,
                      double ds_radius)
     {
+        if (inCloud->empty())
+        {
+            outCloud->clear();
+            outCloudDS->clear();
+            return;
+        }
+
         if (!fuse_imu)
         {
             *outCloud = toCloudXYZI(*inCloud);
@@ -3529,7 +3450,16 @@ public:
             // CloudXYZIPtr marginalizedCloud(new CloudXYZI());
             int margCount = marginalizedCloudInW->size();
 
-            margPerc = double(margCount) / SwCloudDsk[mid_step]->size();
+            // FIX: Check size
+            if (SwCloudDsk[mid_step]->size() > 0)
+            {
+                margPerc = double(margCount) / SwCloudDsk[mid_step]->size();
+            }
+            else
+            {
+                margPerc = 0.0;
+            }
+
             AdmitKeyframe(SwTimeStep[mid_step].back().final_time, tf_W_Bcand.rot, tf_W_Bcand.pos,
                           SwCloudDsk[mid_step], marginalizedCloudInW);
         }
@@ -4415,35 +4345,15 @@ public:
 
     void VisualizeSwTraj()
     {
-        // Publish the sliding window trajectory and log the spline in the world frame
         {
-            // Publish the traj
             static ros::Publisher swprop_viz_pub = nh_ptr->advertise<nav_msgs::Path>("/swprop_traj", 100);
-
-            // Check if we have completed relocalization
-            myTf tf_L0_Lprior(Quaternd(1, 0, 0, 0), Vector3d(0, 0, 0));
-            if (reloc_stat == RELOCALIZED)
-                tf_L0_Lprior = tf_Lprior_L0.inverse();
-
-            // static ofstream swtraj_log;
-            // static bool one_shot = true;
-            // if (one_shot)
-            // {
-            //     swtraj_log.precision(std::numeric_limits<double>::digits10 + 1);
-            //     swtraj_log.open((log_dir + "/swtraj.csv").c_str());
-            //     swtraj_log.close(); // To reset the file
-            //     one_shot = false;
-            // }
-
-            // // Append the data
-            // swtraj_log.open((log_dir + "/swtraj.csv").c_str(), std::ios::app);
-
             double time_stamp = SwTimeStep.back().back().final_time;
-
-            // Publish the propagated poses
             nav_msgs::Path prop_path;
             prop_path.header.frame_id = slam_ref_frame;
             prop_path.header.stamp = ros::Time(time_stamp);
+
+            myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
+
             for (int i = 0; i < WINDOW_SIZE; i++)
             {
                 for (int j = 0; j < SwPropState[i].size(); j++)
@@ -4454,54 +4364,30 @@ public:
                         msg.header.frame_id = slam_ref_frame;
                         msg.header.stamp = ros::Time(SwPropState[i][j].t[k]);
 
-                        Vector3d pInL0 = tf_L0_Lprior * SwPropState[i][j].P[k];
-                        msg.pose.position.x = pInL0.x();
-                        msg.pose.position.y = pInL0.y();
-                        msg.pose.position.z = pInL0.z();
-
+                        // Visualize ở hệ Local để xem độ mượt
+                        Vector3d pInLocal = tf_Map_to_Local * SwPropState[i][j].P[k];
+                        msg.pose.position.x = pInLocal.x();
+                        msg.pose.position.y = pInLocal.y();
+                        msg.pose.position.z = pInLocal.z();
                         prop_path.poses.push_back(msg);
-
-                        if (i == 0)
-                        {
-                            SE3d pose = GlobalTraj->pose(SwPropState[i][j].t[k]);
-                            Vector3d pos = pose.translation();
-                            Quaternd qua = pose.so3().unit_quaternion();
-                            Vector3d vel = GlobalTraj->transVelWorld(SwPropState[i][j].t[k]);
-                            Vector3d gyr = GlobalTraj->rotVelBody(SwPropState[i][j].t[k]) + sfBig[i][j];
-                            Vector3d acc = qua.inverse() * (GlobalTraj->transAccelWorld(SwPropState[i][j].t[k]) + GRAV) + sfBia[i][j];
-
-                            // swtraj_log << SwPropState[i][j].t[k]
-                            //            << "," << SwPropState[i][j].P[k].x() << "," << SwPropState[i][j].P[k].y() << "," << SwPropState[i][j].P[k].z()
-                            //            << "," << SwPropState[i][j].Q[k].x() << "," << SwPropState[i][j].Q[k].y() << "," << SwPropState[i][j].Q[k].z() << "," << SwPropState[i][j].Q[k].w()
-                            //            << "," << SwPropState[i][j].V[k].x() << "," << SwPropState[i][j].V[k].y() << "," << SwPropState[i][j].V[k].z()
-                            //            << "," << SwPropState[i][j].gyr[k].x() << "," << SwPropState[i][j].gyr[k].y() << "," << SwPropState[i][j].gyr[k].z()
-                            //            << "," << SwPropState[i][j].acc[k].x() << "," << SwPropState[i][j].acc[k].y() << "," << SwPropState[i][j].acc[k].z()
-                            //            << "," << pos.x() << "," << pos.y() << "," << pos.z()
-                            //            << "," << qua.x() << "," << qua.y() << "," << qua.z() << "," << qua.w()
-                            //            << "," << vel.x() << "," << vel.y() << "," << vel.z()
-                            //            << "," << gyr.x() << "," << gyr.y() << "," << gyr.z()
-                            //            << "," << acc.x() << "," << acc.y() << "," << acc.z()
-                            //            << endl;
-                        }
                     }
                 }
             }
-            // swtraj_log.close();
             swprop_viz_pub.publish(prop_path);
         }
 
-        // Publish the control points
         {
             static ros::Publisher sw_ctr_pose_viz_pub = nh_ptr->advertise<nav_msgs::Path>("/sw_ctr_pose", 100);
 
             double SwTstart = SwTimeStep.front().front().start_time;
             double SwTfinal = SwTimeStep.front().front().final_time;
-
             double SwDur = SwTfinal - SwTstart;
 
             nav_msgs::Path path;
             path.header.frame_id = slam_ref_frame;
             path.header.stamp = ros::Time(SwTfinal);
+
+            myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
 
             for (int knot_idx = GlobalTraj->numKnots() - 1; knot_idx >= 0; knot_idx--)
             {
@@ -4510,10 +4396,11 @@ public:
                     break;
 
                 Vector3d pos = GlobalTraj->getKnotPos(knot_idx);
+                pos = tf_Map_to_Local * pos;
+
                 geometry_msgs::PoseStamped msg;
                 msg.header.frame_id = slam_ref_frame;
                 msg.header.stamp = ros::Time(tknot);
-
                 msg.pose.position.x = pos.x();
                 msg.pose.position.y = pos.y();
                 msg.pose.position.z = pos.z();
@@ -4524,147 +4411,76 @@ public:
             sw_ctr_pose_viz_pub.publish(path);
         }
 
-        // Publishing odometry stuff
         static myTf tf_Lprior_L0_init;
         {
             static bool one_shot = true;
             if (one_shot)
             {
-                // Get the init transform
-                vector<double> T_W_B_ = {1, 0, 0, 0,
-                                         0, 1, 0, 0,
-                                         0, 0, 1, 0,
-                                         0, 0, 0, 1};
+                vector<double> T_W_B_ = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
                 nh_ptr->getParam("/T_M_W_init", T_W_B_);
                 Matrix4d T_B_V = Matrix<double, 4, 4, RowMajor>(&T_W_B_[0]);
                 tf_Lprior_L0_init = myTf(T_B_V);
-
                 one_shot = false;
             }
         }
 
-        // Stuff in world frame
+        // Define Publishers
         static ros::Publisher opt_odom_pub = nh_ptr->advertise<nav_msgs::Odometry>("/opt_odom", 100);
         static ros::Publisher opt_odom_high_freq_pub = nh_ptr->advertise<nav_msgs::Odometry>("/opt_odom_high_freq", 100);
         static ros::Publisher lastcloud_pub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/lastcloud", 100);
-        // Stuff in map frame
         static ros::Publisher opt_odom_inM_pub = nh_ptr->advertise<nav_msgs::Odometry>("/opt_odom_inM", 100);
 
-        if (reloc_stat != RELOCALIZED)
+        // ================== CORE LOGIC: ALWAYS TRANSFORM BACK TO LOCAL ==================
+
+        myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
+
+        Vector3d posInLocal = tf_Map_to_Local * sfPos.back().back();
+        Quaternd quaInLocal = tf_Map_to_Local.rot * sfQua.back().back();
+        Vector3d velInLocal = tf_Map_to_Local.rot * sfVel.back().back();
+
+        PublishOdom(opt_odom_pub, posInLocal, quaInLocal,
+                    velInLocal, SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
+                    sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
+
+        for (int i = 0; i < N_SUB_SEG; i++)
         {
-            // Publish the odom
-            PublishOdom(opt_odom_pub, sfPos.back().back(), sfQua.back().back(),
-                        sfVel.back().back(), SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
-                        sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
+            double time_stamp = SwTimeStep.front()[i].final_time;
 
-            // Publish the odom at sub segment ends
-            for (int i = 0; i < N_SUB_SEG; i++)
-            {
-                double time_stamp = SwTimeStep.front()[i].final_time;
-                PublishOdom(opt_odom_high_freq_pub, sfPos.front()[i], sfQua.front()[i],
-                            sfVel.front()[i], SwPropState.front()[i].gyr.back(), SwPropState.front()[i].acc.back(),
-                            sfBig.front()[i], sfBia.front()[i], ros::Time(time_stamp), slam_ref_frame);
-            }
+            Vector3d p_hf = tf_Map_to_Local * sfPos.front()[i];
+            Quaternd q_hf = tf_Map_to_Local.rot * sfQua.front()[i];
+            Vector3d v_hf = tf_Map_to_Local.rot * sfVel.front()[i];
 
-            // Publish the latest cloud
-            CloudXYZIPtr latestCloud(new CloudXYZI());
-            pcl::transformPointCloud(*SwCloudDsk.back(), *latestCloud, sfPos.back().back(), sfQua.back().back());
-            Util::publishCloud(lastcloud_pub, *latestCloud, ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
-
-            // Publish pose in map frame by the initial pose guess
-            Vector3d posInM = tf_Lprior_L0_init * sfPos.back().back();
-            Quaternd quaInM = tf_Lprior_L0_init.rot * sfQua.back().back();
-            Vector3d velInM = tf_Lprior_L0_init.rot * sfVel.back().back();
-            PublishOdom(opt_odom_inM_pub, posInM, quaInM,
-                        velInM, SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
-                        sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), "map");
-
-            // Publish the transform between map and world at low rate
-            {
-                // static double update_time = -1;
-                // if (update_time == -1 || ros::Time::now().toSec() - update_time > 1.0)
-                static bool oneshot = true;
-                if (oneshot)
-                {
-                    oneshot = false;
-                    // update_time = ros::Time::now().toSec();
-                    static tf2_ros::StaticTransformBroadcaster static_broadcaster;
-                    geometry_msgs::TransformStamped rostf_M_W;
-                    rostf_M_W.header.stamp = ros::Time::now();
-                    rostf_M_W.header.frame_id = "map";
-                    rostf_M_W.child_frame_id = slam_ref_frame;
-                    rostf_M_W.transform.translation.x = tf_Lprior_L0_init.pos.x();
-                    rostf_M_W.transform.translation.y = tf_Lprior_L0_init.pos.y();
-                    rostf_M_W.transform.translation.z = tf_Lprior_L0_init.pos.z();
-                    rostf_M_W.transform.rotation.x = tf_Lprior_L0_init.rot.x();
-                    rostf_M_W.transform.rotation.y = tf_Lprior_L0_init.rot.y();
-                    rostf_M_W.transform.rotation.z = tf_Lprior_L0_init.rot.z();
-                    rostf_M_W.transform.rotation.w = tf_Lprior_L0_init.rot.w();
-                    static_broadcaster.sendTransform(rostf_M_W);
-                }
-            }
-        }
-        else
-        {
-            static myTf tf_L0_Lprior = tf_Lprior_L0.inverse();
-
-            // Publish the odom in the original slam reference frame
-            Vector3d posInW = tf_L0_Lprior * sfPos.back().back();
-            Quaternd quaInW = tf_L0_Lprior.rot * sfQua.back().back();
-            Vector3d velInW = tf_L0_Lprior.rot * sfVel.back().back();
-            PublishOdom(opt_odom_pub, posInW, quaInW,
-                        velInW, SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
-                        sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
-
-            // Publish the odom at sub segment ends in the original slam reference frame
-            for (int i = 0; i < N_SUB_SEG; i++)
-            {
-                double time_stamp = SwTimeStep.front()[i].final_time;
-                Vector3d posInW = tf_L0_Lprior * sfPos.front()[i];
-                Quaternd quaInW = tf_L0_Lprior.rot * sfQua.front()[i];
-                Vector3d velInW = tf_L0_Lprior.rot * sfVel.front()[i];
-                PublishOdom(opt_odom_high_freq_pub, posInW, quaInW,
-                            velInW, SwPropState.front()[i].gyr.back(), SwPropState.front()[i].acc.back(),
-                            sfBig.front()[i], sfBia.front()[i], ros::Time(time_stamp), slam_ref_frame);
-            }
-
-            // Publish the latest cloud in the original slam reference frame
-            CloudXYZIPtr latestCloud(new CloudXYZI());
-            pcl::transformPointCloud(*SwCloudDsk.back(), *latestCloud, posInW, quaInW);
-            Util::publishCloud(lastcloud_pub, *latestCloud, ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
-
-            // Publish pose in map frame by the true transform
-            PublishOdom(opt_odom_inM_pub, sfPos.back().back(), sfQua.back().back(),
-                        sfVel.back().back(), SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
-                        sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), current_ref_frame);
-
-            // Publish the transform between map and world at low rate
-            {
-                // static double update_time = -1;
-                // if (update_time == -1 || ros::Time::now().toSec() - update_time > 1.0)
-                static bool oneshot = true;
-                if (oneshot)
-                {
-                    oneshot = false;
-                    // update_time = ros::Time::now().toSec();
-                    static tf2_ros::StaticTransformBroadcaster static_broadcaster;
-                    geometry_msgs::TransformStamped rostf_M_W;
-                    rostf_M_W.header.stamp = ros::Time::now();
-                    rostf_M_W.header.frame_id = "map";
-                    rostf_M_W.child_frame_id = slam_ref_frame;
-                    rostf_M_W.transform.translation.x = tf_Lprior_L0.pos.x();
-                    rostf_M_W.transform.translation.y = tf_Lprior_L0.pos.y();
-                    rostf_M_W.transform.translation.z = tf_Lprior_L0.pos.z();
-                    rostf_M_W.transform.rotation.x = tf_Lprior_L0.rot.x();
-                    rostf_M_W.transform.rotation.y = tf_Lprior_L0.rot.y();
-                    rostf_M_W.transform.rotation.z = tf_Lprior_L0.rot.z();
-                    rostf_M_W.transform.rotation.w = tf_Lprior_L0.rot.w();
-                    static_broadcaster.sendTransform(rostf_M_W);
-                }
-            }
+            PublishOdom(opt_odom_high_freq_pub, p_hf, q_hf,
+                        v_hf, SwPropState.front()[i].gyr.back(), SwPropState.front()[i].acc.back(),
+                        sfBig.front()[i], sfBia.front()[i], ros::Time(time_stamp), slam_ref_frame);
         }
 
-        // Publish the relocalization status
+        CloudXYZIPtr latestCloud(new CloudXYZI());
+
+        pcl::transformPointCloud(*SwCloudDsk.back(), *latestCloud, posInLocal, quaInLocal);
+        Util::publishCloud(lastcloud_pub, *latestCloud, ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
+
+        PublishOdom(opt_odom_inM_pub, sfPos.back().back(), sfQua.back().back(),
+                    sfVel.back().back(), SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
+                    sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), current_ref_frame);
+
+        {
+            static tf2_ros::StaticTransformBroadcaster static_broadcaster;
+            geometry_msgs::TransformStamped rostf_M_W;
+            rostf_M_W.header.stamp = ros::Time::now();
+            rostf_M_W.header.frame_id = "map";
+            rostf_M_W.child_frame_id = slam_ref_frame;
+            rostf_M_W.transform.translation.x = tf_Lprior_L0.pos.x();
+            rostf_M_W.transform.translation.y = tf_Lprior_L0.pos.y();
+            rostf_M_W.transform.translation.z = tf_Lprior_L0.pos.z();
+            rostf_M_W.transform.rotation.x = tf_Lprior_L0.rot.x();
+            rostf_M_W.transform.rotation.y = tf_Lprior_L0.rot.y();
+            rostf_M_W.transform.rotation.z = tf_Lprior_L0.rot.z();
+            rostf_M_W.transform.rotation.w = tf_Lprior_L0.rot.w();
+            static_broadcaster.sendTransform(rostf_M_W);
+        }
+
+        // 8. Publish Status Strings
         {
             static ros::Publisher reloc_stat_pub = nh_ptr->advertise<std_msgs::String>("/reloc_stat", 100);
             std_msgs::String msg;
@@ -4683,9 +4499,8 @@ public:
             if (reloc_stat == NOT_RELOCALIZED)
                 msg.data = "NOT_RELOCALIZED";
             else if (reloc_stat == RELOCALIZED)
-                msg.data = myprintf("RELOCALIZED. [%7.2f, %7.2f, %7.2f, %7.2f, %7.2f, %7.2f]",
-                                    tf_Lprior_L0.pos(0), tf_Lprior_L0.pos(1), tf_Lprior_L0.pos(2),
-                                    tf_Lprior_L0.yaw(), tf_Lprior_L0.pitch(), tf_Lprior_L0.roll());
+                msg.data = myprintf("RELOCALIZED. [%7.2f, %7.2f, %7.2f]",
+                                    tf_Lprior_L0.pos(0), tf_Lprior_L0.pos(1), tf_Lprior_L0.pos(2));
             else if (reloc_stat == RELOCALIZING)
                 msg.data = "RELOCALIZING";
             reloc_pose_pub.publish(msg);

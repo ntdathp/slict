@@ -1,19 +1,23 @@
 lidar_topic: "/livox/lidar_ouster"
-uwb_topic:   "/uwb_pose"
+uwb_topic:   "/seed_pose"
 imu_topic:   "/livox/imu"
 
 liteloamNum: 10
 
-leafCoarse: 0.4
-leafFine: 0.2
-maxcorrCoarse: 15.0
-maxcorrFine: 5.0
-iterCoarse: 15
+leafCoarse: 0.5
+leafFine: 0.3
+maxcorrCoarse: 5.0
+maxcorrFine: 2.0
+iterCoarse: 5
 iterFine: 5
 icpThresh: 1.5
 
-yaw_step_first: 30.0
-fine_enable: true 
+yaw_step_first: 60.0
+fine_enable: false 
 
-icpOnly: true
-oneShot: false
+icpOnly: false
+terminate_after_publish: true
+shutdown_on_success: false
+
+imu_type: 0
+gravity_z: 9.82

@@ -1,19 +1,22 @@
 lidar_topic: "/lastcloud"
-uwb_topic:   "/uwb_pose"
+uwb_topic:   "/seed_pose"
 imu_topic:   "/vn100/imu"
 
 liteloamNum: 10
 
 leafCoarse: 0.4
 leafFine: 0.2
-maxcorrCoarse: 15.0
-maxcorrFine: 5.0
-iterCoarse: 15
+maxcorrCoarse: 10.0
+maxcorrFine: 2.0
+iterCoarse: 5
 iterFine: 5
 icpThresh: 1.5
 
-yaw_step_first: 30.0
-fine_enable: true 
+yaw_step_first: 45.0
+fine_enable: false 
 
-icpOnly: true
-oneShot: false
+icpOnly: false
+terminate_after_publish: false
+
+imu_type: 1
+gravity_z: 9.82

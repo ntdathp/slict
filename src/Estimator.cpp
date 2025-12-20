@@ -1222,20 +1222,20 @@ public:
 
     bool ProcessData()
     {
-        // Counter to ignore tracking loss checks immediately after reloc
-        int ignore_tracking_loss_frames = 0;
-        // Timestamp of the last relocation
-        double last_reloc_packet_time = -10.0;
-        // Flag to track if we are currently lost
-        bool tracking_lost = false;
+        // Cờ đánh dấu cần reset hệ thống
+        bool system_needs_reset = false;
+        myTf pending_reloc_pose;
+
+        static map<int, int> solver_prev_state;
+        static map<int, int> solver_curr_state;
+        static int last_updated_knot = -1;
 
         while (ros::ok())
         {
             slict::TimeLog tlog;
             TicToc tt_whileloop;
-            TicToc tt_loop;
 
-            // Check for timeout
+            // --- Check Timeout ---
             static TicToc tt_time_out;
             static double data_time_out = -1;
             if ((data_time_out != -1) && (tt_time_out.Toc() / 1000.0 - data_time_out) > 20 && (packet_buf.size() == 0) && autoexit)
@@ -1244,129 +1244,170 @@ public:
                 exit(0);
             }
 
-            /* #region STEP 0: Loop if there is no new data */
+            // --- STEP 0: Loop if no data ---
+            TicToc tt_loop;
+
             if (packet_buf.empty())
             {
                 this_thread::sleep_for(chrono::milliseconds(1));
                 continue;
             }
-            /* #endregion */
 
-            /* #region STEP 1: Extract the data packet */
-            tt_preopt.Tic();
+            // --- STEP 1: Peek packet (Chưa pop vội nếu đang lost) ---
             slict::FeatureCloud::ConstPtr packet;
             {
                 lock_guard<mutex> lock(packet_buf_mtx);
                 packet = packet_buf.front();
-                packet_buf.pop_front();
+                // Ta sẽ pop sau khi quyết định xử lý thế nào
             }
             data_time_out = tt_time_out.Toc() / 1000.0;
-            /* #endregion */
 
-            // ==========================================================================================
-            // FIX: STEP 1.5 - RELOCALIZATION (OVERWRITE STRATEGY - NO CRASH, NO DRIFT)
-            // ==========================================================================================
-            if (use_prior_map && relocBuf.size() != 0)
+            // ==============================================================================
+            // LOGIC MỚI: XỬ LÝ RELOC & TRACKING LOSS (SOFT RESET)
+            // ==============================================================================
+
+            // 1. Kiểm tra lệnh Reloc từ bên ngoài
+            if (use_prior_map && !relocBuf.empty())
             {
-                myTf target_pose;
+                lock_guard<mutex> lg(relocBufMtx);
+                pending_reloc_pose = relocBuf.back(); // Đây là pose thô
+                relocBuf.clear();
+
+                // ====================================================
+                // REFINE RELOC POSE (ICP Alignment)
+                // ====================================================
+                if (refine_reloc_tf && pmLoaded)
                 {
-                    lock_guard<mutex> lg(relocBufMtx);
-                    target_pose = relocBuf.back();
-                    relocBuf.clear();
-                }
+                    printf(KYEL "Refining Reloc Pose via ICP...\n" RESET);
 
-                // 1. Calculate Delta Transform (For Visualization Correctness)
-                // We need this to shift the visual path (GlobalTraj) and Keyframes
-                Vector3d curr_p = sfPos.back().back();
-                Quaternd curr_q = sfQua.back().back();
-                myTf current_pose(curr_q, curr_p);
-                myTf tf_delta = target_pose * current_pose.inverse();
+                    CloudXYZITPtr scan_raw(new CloudXYZIT());
+                    pcl::fromROSMsg(packet->extracted_cloud, *scan_raw);
+                    CloudXYZIPtr scan_in(new CloudXYZI());
+                    *scan_in = toCloudXYZI(*scan_raw);
 
-                // Accumulate the visual transform
-                tf_Lprior_L0 = tf_delta * tf_Lprior_L0;
+                    Matrix4f guess_tf = pending_reloc_pose.cast<float>().tfMat();
+                    Matrix4f refined_tf;
+                    double fitness = 0, time = 0;
 
-                printf(KYEL "SYSTEM RELOC (HARD CORRECTION):\n"
-                            " - Target Pose:   [%.2f, %.2f, %.2f]\n"
-                            " - Action: Overwriting state history to Target + Zero Velocity.\n" RESET,
-                       target_pose.pos.x(), target_pose.pos.y(), target_pose.pos.z());
+                    bool success = CheckICP(priorMap, scan_in, guess_tf, refined_tf,
+                                            10.0, 20, 0.5, fitness, time);
 
-                // 2. OVERWRITE STATES (FLATTEN STATE)
-                // Instead of shifting the old (drifting) trajectory, we force it to stay still at the Target.
-                Vector3d p_target = target_pose.pos;
-                Quaternd q_target = target_pose.rot;
-                Vector3d v_zero = Vector3d::Zero();
-
-                // Overwrite Window Buffer States (ss, sf)
-                // We keep the size intact to prevent crashes in loops later
-                for (int i = 0; i < (int)ssPos.size(); ++i)
-                {
-                    for (int j = 0; j < (int)ssPos[i].size(); ++j)
+                    if (success)
                     {
-                        ssPos[i][j] = p_target;
-                        ssQua[i][j] = q_target;
-                        ssVel[i][j] = v_zero; // STOP DRIFT
+                        // --- FIX LỖI Ở ĐÂY: Dùng dấu = để khởi tạo ---
+                        mytf refined_pose_Tf(refined_tf);
 
-                        sfPos[i][j] = p_target;
-                        sfQua[i][j] = q_target;
-                        sfVel[i][j] = v_zero; // STOP DRIFT
+                        printf(KGRN "Reloc Refined: Diff [%.2fm, %.2fdeg]. Fitness: %.3f\n" RESET,
+                               (refined_pose_Tf.pos - pending_reloc_pose.pos).norm(),
+                               Util::angleDiff(refined_pose_Tf.rot, pending_reloc_pose.rot),
+                               fitness);
 
-                        // Optional: Reset Bias to zero or keep current best estimate
-                        // Resetting to zero is safer if drift was huge
-                        ssBia[i][j].setZero();
-                        sfBia[i][j].setZero();
-                        ssBig[i][j].setZero();
-                        sfBig[i][j].setZero();
+                        pending_reloc_pose = refined_pose_Tf; // Cập nhật pose xịn
+                    }
+                    else
+                    {
+                        printf(KRED "Reloc Refine Failed (Low fitness). Using Raw Pose.\n" RESET);
                     }
                 }
+                // ====================================================
 
-                // Overwrite Propagated States (SwPropState)
-                for (int i = 0; i < (int)SwPropState.size(); ++i)
+                system_needs_reset = true;
+            }
+
+            // 2. Kiểm tra Tracking Loss
+            bool is_blocked = false;
+            // Chỉ check khi hệ thống đã khởi tạo và không đang trong quá trình reset
+            if (ALL_INITED && !system_needs_reset)
+            {
+                CloudXYZITPtr tmpCloud(new CloudXYZIT());
+                pcl::fromROSMsg(packet->extracted_cloud, *tmpCloud);
+                is_blocked = IsLidarBlocked(tmpCloud);
+            }
+
+            if (is_blocked)
+            {
+                ROS_WARN_THROTTLE(1.0, KRED "LiDAR Blocked/Loss! Pausing SLAM... Waiting for Reloc or Clear View." RESET);
+                last_tracking_loss_time.store(ros::Time::now().toSec());
+
+                // POP packet ra và vứt đi để tránh tắc nghẽn buffer
                 {
-                    for (int j = 0; j < (int)SwPropState[i].size(); ++j)
-                    {
-                        for (int k = 0; k < (int)SwPropState[i][j].size(); ++k)
-                        {
-                            SwPropState[i][j].P[k] = p_target;
-                            SwPropState[i][j].Q[k] = q_target;
-                            SwPropState[i][j].V[k] = v_zero; // STOP DRIFT
-                        }
-                    }
+                    lock_guard<mutex> lock(packet_buf_mtx);
+                    packet_buf.pop_front();
                 }
 
-                // 3. Reset Spline
-                // Force the spline to be a flat line at the Target Pose across its entire current time range
-                if (GlobalTraj)
-                {
-                    double t_start = GlobalTraj->minTime();
-                    double t_end = GlobalTraj->maxTime();
+                if (reloc_stat == RELOCALIZED)
+                    reloc_stat = NOT_RELOCALIZED;
 
-                    // Re-initialize spline with target pose
-                    GlobalTraj.reset(new PoseSplineX(SPLINE_N, deltaT));
-                    GlobalTraj->setStartTime(t_start);
-                    GlobalTraj->extendKnotsTo(t_end, target_pose.getSE3());
+                continue; // Bỏ qua frame này, không chạy SLAM
+            }
+
+            // 2.5: Anti-Jump Guard
+            // Nếu Lidar tốt nhưng chưa Reloc -> Đứng chờ, không chạy tiếp để tránh nhảy cóc
+            if (reloc_stat == NOT_RELOCALIZED && !system_needs_reset)
+            {
+                ROS_INFO_THROTTLE(1.0, KYEL "LiDAR good. Waiting for Reloc Pose to resume..." RESET);
+
+                // Vẫn phải pop packet ra để tránh đầy bộ đệm, nhưng không xử lý
+                {
+                    lock_guard<mutex> lock(packet_buf_mtx);
+                    packet_buf.pop_front();
                 }
 
-                // 4. Transform Visuals (Keyframes)
-                // Keyframes are historical data, so we shift them using Delta to match new map frame
-                if (KfCloudPose)
-                    pcl::transformPointCloud(*KfCloudPose, *KfCloudPose, tf_delta.cast<float>().tfMat());
+                continue; // Quay lại đầu vòng lặp
+            }
 
-#pragma omp parallel for num_threads(MAX_THREADS)
-                for (int i = 0; i < (int)KfCloudinW.size(); ++i)
-                {
-                    pcl::transformPointCloud(*KfCloudinW[i], *KfCloudinW[i], tf_delta.cast<float>().tfMat());
-                }
+            // 3. Thực hiện Soft Reset nếu có lệnh Reloc
+            if (system_needs_reset)
+            {
+                // A. Reset biến trạng thái
+                ALL_INITED = false;
 
-                // 5. Update Solver & Map
-                // Clear solver coefficients because old factors are invalid for the new jumped pose
-                for (int i = 0; i < (int)SwLidarCoef.size(); ++i)
-                {
-                    SwLidarCoef[i].clear();
-                    SwDepVsAssoc[i].clear();
-                }
+                // B. Xóa sạch dữ liệu cũ
+                SwTimeStep.clear();
+                SwCloud.clear();
+                SwCloudDsk.clear();
+                SwCloudDskDS.clear();
+                SwLidarCoef.clear();
+                SwDepVsAssoc.clear();
+                SwImuBundle.clear();
+                SwPropState.clear();
 
-                mySolver->RelocalizePrior(target_pose.getSE3()); // Update prior factor
+                ssQua.clear();
+                sfQua.clear();
+                ssPos.clear();
+                sfPos.clear();
+                ssVel.clear();
+                sfVel.clear();
+                ssBia.clear();
+                sfBia.clear();
+                ssBig.clear();
+                sfBig.clear();
 
+                // C. Khởi tạo lại cấu trúc deque
+                ssQua = sfQua = deque<deque<Quaternd>>(WINDOW_SIZE, deque<Quaternd>(N_SUB_SEG, Quaternd::Identity()));
+                ssPos = sfPos = deque<deque<Vector3d>>(WINDOW_SIZE, deque<Vector3d>(N_SUB_SEG, Vector3d(0, 0, 0)));
+                ssVel = sfVel = deque<deque<Vector3d>>(WINDOW_SIZE, deque<Vector3d>(N_SUB_SEG, Vector3d(0, 0, 0)));
+                ssBia = sfBia = deque<deque<Vector3d>>(WINDOW_SIZE, deque<Vector3d>(N_SUB_SEG, Vector3d(0, 0, 0)));
+                ssBig = sfBig = deque<deque<Vector3d>>(WINDOW_SIZE, deque<Vector3d>(N_SUB_SEG, Vector3d(0, 0, 0)));
+
+                // D. Hủy và Reset Spline
+                GlobalTraj.reset();
+                GlobalTraj = nullptr;
+
+                // E. QUAN TRỌNG: Cập nhật Transform
+                tf_Lprior_L0 = pending_reloc_pose;
+
+                // F. Đổi trạng thái
+                reloc_stat = RELOCALIZED;
+                current_ref_frame = "map";
+
+                // G. Reset Solver
+                if (mySolver)
+                    delete mySolver;
+                mySolver = new tmnSolver(nh_ptr);
+                mySolver->RelocalizePrior(SE3d()); // Prior tại local 0,0,0
+
+                // H. Đảm bảo Map đúng được load
                 {
                     lock_guard<mutex> lg(map_mtx);
                     if (use_ufm)
@@ -1375,93 +1416,30 @@ public:
                         activeikdtMap = priorikdtMapPtr;
                     ufomap_version++;
                 }
-                {
-                    lock_guard<mutex> lock(global_map_mtx);
-                    globalMap->clear();
-                }
 
-                // 6. Update Flags & Timers
-                current_ref_frame = "map";
-                reloc_stat = RELOCALIZED;
-                last_tracking_loss_time.store(0.0);
-                last_reloc_packet_time = packet->header.stamp.toSec();
-                ignore_tracking_loss_frames = 50; // Enable grace period
-
-                // 7. Flush Buffer
-                // Remove old packets accumulated while Lidar was blocked
+                // Xóa buffer cũ
                 {
                     lock_guard<mutex> lock(packet_buf_mtx);
-                    int dropped = packet_buf.size();
                     packet_buf.clear();
-                    printf(KYEL "Flushed %d backlog packets.\n" RESET, dropped);
                 }
 
-                tracking_lost = false;
+                solver_prev_state.clear();
+                solver_curr_state.clear();
+                last_updated_knot = -1;
 
-                // IMPORTANT: DO NOT CONTINUE.
-                // We kept the buffer structures (SwTimeStep) intact but overwrote their values.
-                // So we can process the current 'packet' immediately to resume odometry continuity.
+                system_needs_reset = false;
+                ROS_INFO(KGRN "System Reset Done. Resuming SLAM from Reloc Pose." RESET);
+
+                continue;
             }
-            // ==========================================================================================
 
-            /* --- Check LiDAR occlusion --- */
-            CloudXYZITPtr tmpCloud(new CloudXYZIT());
-            pcl::fromROSMsg(packet->extracted_cloud, *tmpCloud);
-
-            // Logic Grace Period
-            double time_diff = packet->header.stamp.toSec() - last_reloc_packet_time;
-            bool in_grace_period = (time_diff > 0 && time_diff < 3.0);
-
-            if (ignore_tracking_loss_frames > 0)
+            // POP packet thực sự để xử lý (Nếu không rơi vào các case continue ở trên)
             {
-                ignore_tracking_loss_frames--;
-                in_grace_period = true;
+                lock_guard<mutex> lock(packet_buf_mtx);
+                if (packet_buf.empty())
+                    continue;
+                packet_buf.pop_front();
             }
-
-            bool is_blocked = IsLidarBlocked(tmpCloud);
-
-            if (!in_grace_period && is_blocked)
-            {
-                if (!tracking_lost)
-                {
-                    ROS_WARN_THROTTLE(1.0, KYEL "[Estimator] Tracking Loss detected! Emergency Brake Active..." RESET);
-                    last_tracking_loss_time.store(ros::Time::now().toSec());
-                }
-
-                tracking_lost = true;
-                if (reloc_stat == RELOCALIZED)
-                    reloc_stat = NOT_RELOCALIZED;
-
-                // ====================================================
-                // EMERGENCY BRAKE: Force Velocity to 0 while lost
-                // ====================================================
-                // This prevents the robot from drifting to Z = -2000m
-                Vector3d v_zero = Vector3d::Zero();
-                for (int i = 0; i < WINDOW_SIZE; i++)
-                {
-                    for (int j = 0; j < N_SUB_SEG; j++)
-                    {
-                        ssVel[i][j] = v_zero;
-                        sfVel[i][j] = v_zero;
-                    }
-                }
-                for (int i = 0; i < (int)SwPropState.size(); ++i)
-                {
-                    for (int j = 0; j < (int)SwPropState[i].size(); ++j)
-                    {
-                        for (int k = 0; k < (int)SwPropState[i][j].size(); ++k)
-                        {
-                            SwPropState[i][j].V[k] = v_zero;
-                        }
-                    }
-                }
-            }
-            else if (!is_blocked && tracking_lost)
-            {
-                ROS_INFO_THROTTLE(1.0, KGRN "[Estimator] LiDAR recovered. Waiting for Reloc Pose..." RESET);
-                // We stay in tracking_lost state until a reloc pose arrives
-            }
-            /* --- Check LiDAR occlusion --- */
 
             /* #region STEP 2: Initialize orientation and Map -------------------------------------------------------*/
 
@@ -1566,8 +1544,6 @@ public:
             /* #region STEP 5: Intialize the extended part of the spline --------------------------------------------*/
 
             TicToc tt_extspline;
-
-            static int last_updated_knot = -1;
 
             int baseKnot = GlobalTraj->computeTIndex(SwPropState.back().front().t[0]).second + 1;
             for (int knot_idx = baseKnot; knot_idx < GlobalTraj->numKnots(); knot_idx++)
@@ -1718,8 +1694,6 @@ public:
                 int swBaseKnot = GlobalTraj->computeTIndex(SwImuBundle[0].front().front().t).second;
                 int swNextBase = GlobalTraj->computeTIndex(SwImuBundle[1].front().front().t).second;
 
-                static map<int, int> prev_knot_x;
-                static map<int, int> curr_knot_x;
 
                 double swStartTime = GlobalTraj->getKnotTime(swBaseKnot);
                 double swFinalTime = SwTimeStep.back().back().final_time - 1e-3;
@@ -1738,9 +1712,9 @@ public:
                                "Knot count not matching %d, %d, %d\n",
                                LocalTraj.numKnots(), GlobalTraj->numKnots() - swBaseKnot, swBaseKnot);
 
-                curr_knot_x.clear();
+                solver_curr_state.clear();
                 for (int knot_idx = 0; knot_idx < LocalTraj.numKnots(); knot_idx++)
-                    curr_knot_x[knot_idx + swBaseKnot] = knot_idx;
+                    solver_curr_state[knot_idx + swBaseKnot] = knot_idx;
 
                 TicToc tt_feaSel;
                 vector<ImuIdx> imuSelected;
@@ -1753,7 +1727,7 @@ public:
 
                 lioop_times_report = "";
                 LIOOptimization(report, lioop_times_report, LocalTraj,
-                                prev_knot_x, curr_knot_x, swNextBase, outer_iter,
+                                solver_prev_state, solver_curr_state, swNextBase, outer_iter,
                                 imuSelected, featureSelected, tlog);
 
                 for (int knot_idx = 0; knot_idx < LocalTraj.numKnots(); knot_idx++)
@@ -1911,7 +1885,7 @@ public:
 
                 if (!redo_optimization)
                 {
-                    prev_knot_x = curr_knot_x;
+                    solver_prev_state = solver_curr_state;
                     break;
                 }
             }
@@ -4345,14 +4319,17 @@ public:
 
     void VisualizeSwTraj()
     {
+        // 1. Visualize Trajectory (Spline đã nội suy)
         {
             static ros::Publisher swprop_viz_pub = nh_ptr->advertise<nav_msgs::Path>("/swprop_traj", 100);
             double time_stamp = SwTimeStep.back().back().final_time;
             nav_msgs::Path prop_path;
+
+            // Frame là Local (slam_ref_frame / "world")
             prop_path.header.frame_id = slam_ref_frame;
             prop_path.header.stamp = ros::Time(time_stamp);
 
-            myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
+            // [FIX] KHÔNG dùng tf_Map_to_Local nữa. Dữ liệu SwPropState vốn đã là Local rồi.
 
             for (int i = 0; i < WINDOW_SIZE; i++)
             {
@@ -4364,8 +4341,9 @@ public:
                         msg.header.frame_id = slam_ref_frame;
                         msg.header.stamp = ros::Time(SwPropState[i][j].t[k]);
 
-                        // Visualize ở hệ Local để xem độ mượt
-                        Vector3d pInLocal = tf_Map_to_Local * SwPropState[i][j].P[k];
+                        // [FIX] Sử dụng trực tiếp tọa độ Local
+                        Vector3d pInLocal = SwPropState[i][j].P[k];
+
                         msg.pose.position.x = pInLocal.x();
                         msg.pose.position.y = pInLocal.y();
                         msg.pose.position.z = pInLocal.z();
@@ -4376,6 +4354,7 @@ public:
             swprop_viz_pub.publish(prop_path);
         }
 
+        // 2. Visualize Control Points (Các điểm điều khiển Spline)
         {
             static ros::Publisher sw_ctr_pose_viz_pub = nh_ptr->advertise<nav_msgs::Path>("/sw_ctr_pose", 100);
 
@@ -4384,19 +4363,18 @@ public:
             double SwDur = SwTfinal - SwTstart;
 
             nav_msgs::Path path;
-            path.header.frame_id = slam_ref_frame;
+            path.header.frame_id = slam_ref_frame; // Local frame
             path.header.stamp = ros::Time(SwTfinal);
 
-            myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
-
+            // [FIX] Bỏ transform ngược
             for (int knot_idx = GlobalTraj->numKnots() - 1; knot_idx >= 0; knot_idx--)
             {
                 double tknot = GlobalTraj->getKnotTime(knot_idx);
                 if (tknot < SwTstart - 2 * SwDur)
                     break;
 
+                // Spline reset tạo ra knot ở Local frame -> Dùng trực tiếp
                 Vector3d pos = GlobalTraj->getKnotPos(knot_idx);
-                pos = tf_Map_to_Local * pos;
 
                 geometry_msgs::PoseStamped msg;
                 msg.header.frame_id = slam_ref_frame;
@@ -4411,6 +4389,7 @@ public:
             sw_ctr_pose_viz_pub.publish(path);
         }
 
+        // --- Init TF (Giữ nguyên logic cũ) ---
         static myTf tf_Lprior_L0_init;
         {
             static bool one_shot = true;
@@ -4430,46 +4409,50 @@ public:
         static ros::Publisher lastcloud_pub = nh_ptr->advertise<sensor_msgs::PointCloud2>("/lastcloud", 100);
         static ros::Publisher opt_odom_inM_pub = nh_ptr->advertise<nav_msgs::Odometry>("/opt_odom_inM", 100);
 
-        // ================== CORE LOGIC: ALWAYS TRANSFORM BACK TO LOCAL ==================
+        // ================== CORE VISUALIZATION LOGIC ==================
 
-        myTf tf_Map_to_Local = tf_Lprior_L0.inverse();
-
-        Vector3d posInLocal = tf_Map_to_Local * sfPos.back().back();
-        Quaternd quaInLocal = tf_Map_to_Local.rot * sfQua.back().back();
-        Vector3d velInLocal = tf_Map_to_Local.rot * sfVel.back().back();
-
-        PublishOdom(opt_odom_pub, posInLocal, quaInLocal,
-                    velInLocal, SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
+        // 3. Publish Odom Local (Để phục vụ control/planning cục bộ)
+        // Dùng trực tiếp sfPos (đang là Local)
+        PublishOdom(opt_odom_pub, sfPos.back().back(), sfQua.back().back(),
+                    sfVel.back().back(), SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
                     sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
 
+        // 4. Publish High Freq Odom Local
         for (int i = 0; i < N_SUB_SEG; i++)
         {
             double time_stamp = SwTimeStep.front()[i].final_time;
-
-            Vector3d p_hf = tf_Map_to_Local * sfPos.front()[i];
-            Quaternd q_hf = tf_Map_to_Local.rot * sfQua.front()[i];
-            Vector3d v_hf = tf_Map_to_Local.rot * sfVel.front()[i];
-
-            PublishOdom(opt_odom_high_freq_pub, p_hf, q_hf,
-                        v_hf, SwPropState.front()[i].gyr.back(), SwPropState.front()[i].acc.back(),
+            // Dùng trực tiếp (Local)
+            PublishOdom(opt_odom_high_freq_pub, sfPos.front()[i], sfQua.front()[i],
+                        sfVel.front()[i], SwPropState.front()[i].gyr.back(), SwPropState.front()[i].acc.back(),
                         sfBig.front()[i], sfBia.front()[i], ros::Time(time_stamp), slam_ref_frame);
         }
 
+        // 5. Publish Cloud Local
         CloudXYZIPtr latestCloud(new CloudXYZI());
-
-        pcl::transformPointCloud(*SwCloudDsk.back(), *latestCloud, posInLocal, quaInLocal);
+        // Transform cloud về đúng vị trí local hiện tại
+        pcl::transformPointCloud(*SwCloudDsk.back(), *latestCloud, sfPos.back().back(), sfQua.back().back());
         Util::publishCloud(lastcloud_pub, *latestCloud, ros::Time(SwTimeStep.back().back().final_time), slam_ref_frame);
 
-        PublishOdom(opt_odom_inM_pub, sfPos.back().back(), sfQua.back().back(),
-                    sfVel.back().back(), SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
-                    sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), current_ref_frame);
+        // 6. Publish Odom Map (Quan trọng nhất để check Reloc đúng hay sai)
+        // Phải biến đổi từ Local -> Map bằng tf_Lprior_L0
+        Vector3d posInMap = tf_Lprior_L0 * sfPos.back().back();
+        Quaternd quaInMap = tf_Lprior_L0 * sfQua.back().back();
+        Vector3d velInMap = tf_Lprior_L0.rot * sfVel.back().back();
 
+        PublishOdom(opt_odom_inM_pub, posInMap, quaInMap,
+                    velInMap, SwPropState.back().back().gyr.back(), SwPropState.back().back().acc.back(),
+                    sfBig.back().back(), sfBia.back().back(), ros::Time(SwTimeStep.back().back().final_time), "map");
+
+        // 7. Publish TF (Map -> World)
+        // Đây là cầu nối để Rviz hiển thị đúng các topic Local ("world") trên nền Map ("map")
         {
             static tf2_ros::StaticTransformBroadcaster static_broadcaster;
             geometry_msgs::TransformStamped rostf_M_W;
             rostf_M_W.header.stamp = ros::Time::now();
-            rostf_M_W.header.frame_id = "map";
-            rostf_M_W.child_frame_id = slam_ref_frame;
+            rostf_M_W.header.frame_id = "map";         // Parent
+            rostf_M_W.child_frame_id = slam_ref_frame; // Child (thường là "world")
+
+            // TF này chính là tf_Lprior_L0 mà ta tính toán lúc Reloc
             rostf_M_W.transform.translation.x = tf_Lprior_L0.pos.x();
             rostf_M_W.transform.translation.y = tf_Lprior_L0.pos.y();
             rostf_M_W.transform.translation.z = tf_Lprior_L0.pos.z();

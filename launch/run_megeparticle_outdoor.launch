@@ -50,9 +50,9 @@
       <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/>
 
       <!-- Run the relocalization -->
-      <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen" >
+      <!-- <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen" > -->
+      <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" >
         <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
-
         <rosparam file="$(find slict)/config/multi_reloc_megaparticle_outdoor.yaml" command="load" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
@@ -70,11 +70,11 @@
 
 
       <!-- Run the Estimator -->
-      <!-- <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
+      <param name="/prior_map_dir" type="string" value="$(arg prior_map_dir)" />
       <param name="/use_prior_map" type="int"    value="$(arg use_prior_map)" />
       <param name="/show_report"    type="int"    value="$(arg show_report)"   />
       <param name="/slam_ref_frame" type="string" value="odom"/>
-      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/> -->
+      <node pkg="slict" required="true" type="slict_estimator" name="slict_estimator" respawn="false" output="screen"/>
       
       <!--- Run Rviz-->
       <node pkg="rviz" type="rviz" name="rviz" respawn="true" output="log"
@@ -90,9 +90,9 @@
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
       <node pkg="slict" type="odom_to_tf.py" name="odom_to_tf" output="screen" respawn="false"/>
 
-      <node pkg="slict" type="reloc_pose_to_csv.py" name="reloc_pose_to_csv" output="screen" respawn="false" >    
+      <!-- <node pkg="slict" type="reloc_pose_to_csv.py" name="reloc_pose_to_csv" output="screen" respawn="false" >    
             <param name="output_dir" value="/home/dat/data/exp/outdoor_kidnap/reloc_pose" />
             <param name="csv_name" value="outdoor_kidnap_a_reloc.csv" />
-      </node>
+      </node> -->
 
 </launch>

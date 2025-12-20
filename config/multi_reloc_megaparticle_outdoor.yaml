@@ -1,9 +1,13 @@
+# --- Topic ---
 lidar_topic: "/livox/lidar_ouster"
 uwb_topic:   "/seed_pose"
 imu_topic:   "/livox/imu"
 
+# --- Manager Logic ---
 liteloamNum: 10
+shutdown_on_success: false
 
+# --- ICP & Optimization ---
 leafCoarse: 0.5
 leafFine: 0.3
 maxcorrCoarse: 5.0
@@ -15,9 +19,15 @@ icpThresh: 1.5
 yaw_step_first: 60.0
 fine_enable: false 
 
+# --- Worker Logic ---
 icpOnly: false
 terminate_after_publish: true
-shutdown_on_success: false
 
+# --- IMU Configuration ---
 imu_type: 0
 gravity_z: 9.82
+
+# --- Adaptive Downsampling ---
+max_lidar_factor: 6000    
+ds_radius: 0.4           
+min_leaf_size: 0.1

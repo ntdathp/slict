@@ -130,6 +130,14 @@ private:
   double icpThresh = 2.0;
   double yaw_step_first = 45.0;
 
+  // --- ADAPTIVE DOWNSAMPLING PARAMS -------
+  int max_lidar_factor = 6000;
+  double ds_radius = 0.4;
+  double min_leaf_size = 0.1;
+
+  double last_adaptive_time_ = -1.0;
+  int adaptive_scale_ = 0;
+
   // Flags
   bool fine_enable = false;
   bool icpConverged = false;
@@ -161,8 +169,14 @@ public:
     pnh.param("maxcorrFine", maxcorrFine, maxcorrFine);
     pnh.param("leafCoarse", leafCoarse, leafCoarse);
     pnh.param("leafFine", leafFine, leafFine);
+
+    pnh.param("max_lidar_factor", max_lidar_factor, 6000);
+    pnh.param("ds_radius", ds_radius, 0.4);
+    pnh.param("min_leaf_size", min_leaf_size, 0.1);
+
     pnh.param("icpThresh", icpThresh, icpThresh);
     pnh.param("icpOnly", icpOnly, true);
+
     pnh.param("terminate_after_publish", terminate_after_publish, true);
     pnh.param("yaw_step_first", yaw_step_first, yaw_step_first);
     pnh.param("fine_enable", fine_enable, fine_enable);
@@ -265,14 +279,67 @@ private:
       // 3. Downsample (Coarse & Fine)
       CloudXYZIPtr srcCoarse(new CloudXYZI()), srcFine(new CloudXYZI());
       {
-        pcl::VoxelGrid<PointXYZI> vg;
-        vg.setInputCloud(raw);
+        // --- LOGIC ADAPTIVE DOWNSAMPLING CHO COARSE CLOUD ---
+        // 1. Reset scale 
+        if (last_adaptive_time_ < 0 || (tNow - last_adaptive_time_) > 5.0)
+        {
+          last_adaptive_time_ = tNow;
+          adaptive_scale_ = 0;
+        }
 
-        vg.setLeafSize(leafCoarse, leafCoarse, leafCoarse);
-        vg.filter(*srcCoarse);
+        // 2. Adaptive Loop
+        if (ds_radius > 0.0)
+        {
+          int current_scale = adaptive_scale_;
+          pcl::UniformSampling<PointXYZI> downsampler;
+          while (true)
+          {
+            double ds_effective_radius = ds_radius / (std::pow(2, current_scale));
 
-        vg.setLeafSize(leafFine, leafFine, leafFine);
-        vg.filter(*srcFine);
+            if (ds_effective_radius < min_leaf_size)
+              ds_effective_radius = min_leaf_size;
+
+            downsampler.setInputCloud(raw);
+            downsampler.setRadiusSearch(ds_effective_radius);
+            downsampler.filter(*srcCoarse);
+
+            if (srcCoarse->size() >= max_lidar_factor ||
+                srcCoarse->size() == raw->size() ||
+                ds_effective_radius <= min_leaf_size)
+            {
+              break;
+            }
+            else
+            {
+              // printf(KYEL "[LITELOAM %d] Too few points (%zu). Radius %.3f -> Relaxing...\n" RESET,
+              //        liteloam_id, srcCoarse->size(), ds_effective_radius);
+              current_scale++;
+
+              if (ds_effective_radius <= min_leaf_size)
+                break;
+            }
+          }
+
+
+          if (current_scale != adaptive_scale_)
+          {
+            adaptive_scale_ = current_scale;
+            last_adaptive_time_ = tNow;
+          }
+        }
+        else
+        {
+          pcl::VoxelGrid<PointXYZI> vg;
+          vg.setInputCloud(raw);
+          vg.setLeafSize(leafCoarse, leafCoarse, leafCoarse);
+          vg.filter(*srcCoarse);
+        }
+
+        // --- FINE CLOUD ----
+        pcl::VoxelGrid<PointXYZI> vgFine;
+        vgFine.setInputCloud(raw);
+        vgFine.setLeafSize(leafFine, leafFine, leafFine);
+        vgFine.filter(*srcFine);
       }
 
       // 4. Collect IMU Data
@@ -551,12 +618,12 @@ private:
         printf(KYEL "[LITELOAM %d] IMU Mode: Init frame processed. Waiting for 2nd frame to verify...\n" RESET, liteloam_id);
       }
 
-      // 10. Update State 
+      // 10. Update State
       firstCloud = false;
       icpConverged = true;
       imuPreint.reset(nullptr);
       v_prev = v_curr;
-      prevPose = finalPose; 
+      prevPose = finalPose;
     }
 
     printf("[LITELOAM %d] Exiting processing thread.\n", liteloam_id);

@@ -1,6 +1,6 @@
 # --- Topic ---
 lidar_topic: "/lastcloud"
-uwb_topic:   "/seed_pose"
+seed_pose_topic:   "/seed_pose"
 imu_topic:   "/vn100/imu"
 
 # --- Manager Logic ---
@@ -24,7 +24,7 @@ icpOnly: false
 terminate_after_publish: false
 
 # --- IMU Configuration ---
-imu_type: 1
+imu_type: 2
 gravity_z: 9.82
 
 # --- Adaptive Downsampling ---

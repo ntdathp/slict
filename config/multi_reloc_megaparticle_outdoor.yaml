@@ -1,6 +1,6 @@
 # --- Topic ---
 lidar_topic: "/livox/lidar_ouster"
-uwb_topic:   "/seed_pose"
+seed_pose_topic:   "/seed_pose"
 imu_topic:   "/livox/imu"
 
 # --- Manager Logic ---

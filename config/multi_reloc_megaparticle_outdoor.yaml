@@ -1,7 +1,7 @@
 # --- Topic ---
-lidar_topic: "/livox/lidar_ouster"
+lidar_topic:       "/livox/lidar_ouster"
 seed_pose_topic:   "/seed_pose"
-imu_topic:   "/livox/imu"
+imu_topic:         "/livox/imu"
 
 # --- Manager Logic ---
 liteloamNum: 10

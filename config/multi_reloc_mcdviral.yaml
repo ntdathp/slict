@@ -1,7 +1,7 @@
 # --- Topic ---
-lidar_topic: "/lastcloud"
+lidar_topic:       "/lastcloud"
 seed_pose_topic:   "/seed_pose"
-imu_topic:   "/vn100/imu"
+imu_topic:         "/vn100/imu"
 
 # --- Manager Logic ---
 liteloamNum: 10

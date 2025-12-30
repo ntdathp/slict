@@ -471,8 +471,8 @@ private:
 
       if (!std::isfinite(coarse_best_fit))
       {
-        printf(KYEL "[LITELOAM %d] FAILED (Coarse ICP). Stamp: %.3f. Init: [%.2f, %.2f, %.2f]\n" RESET,
-               liteloam_id, tNow, predPose.pos.x(), predPose.pos.y(), predPose.pos.z());
+        // printf(KYEL "[LITELOAM %d] FAILED (Coarse ICP). Stamp: %.3f. Init: [%.2f, %.2f, %.2f]\n" RESET,
+        //        liteloam_id, tNow, predPose.pos.x(), predPose.pos.y(), predPose.pos.z());
         icpConverged = false;
         running = false;
         continue;
@@ -615,7 +615,7 @@ private:
       }
       else
       {
-        printf(KYEL "[LITELOAM %d] IMU Mode: Init frame processed. Waiting for 2nd frame to verify...\n" RESET, liteloam_id);
+        // printf(KYEL "[LITELOAM %d] IMU Mode: Init frame processed. Waiting for 2nd frame to verify...\n" RESET, liteloam_id);
       }
 
       // 10. Update State
@@ -626,7 +626,7 @@ private:
       prevPose = finalPose;
     }
 
-    printf("[LITELOAM %d] Exiting processing thread.\n", liteloam_id);
+    // printf("[LITELOAM %d] Exiting processing thread.\n", liteloam_id);
   }
 };
 

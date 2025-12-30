@@ -14,8 +14,8 @@
 
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_01/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_02/*.bag"/> -->
-      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/> -->
-      <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/>
+      <arg  name="bag_file"  default="$(arg data_path)/ntu_day_10/*.bag"/>
+      <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_04/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_08/*.bag"/> -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/ntu_night_13/*.bag"/>   -->
       <!-- <arg  name="bag_file"  default="$(arg data_path)/kth_day_06/*.bag"/> -->
@@ -130,19 +130,9 @@
       <!-- Run the sensor sync -->
       <node pkg="slict" required="true" type="slict_sensorsync" name="slict_sensorsync" respawn="false" output="log"/>
 
-      <!-- Run the relocalization -->
-       <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
       <node pkg="slict" type="slict_relocalization" name="slict_relocalization" respawn="false" output="screen">
-        <param name="liteloamNum"         value="10" />
-        <param name="leafCoarse"          value="0.4" />
-        <param name="leafFine"            value="0.2" />
-        <param name="maxcorrCoarse"       value="10.0" />
-        <param name="maxcorrFine"         value="3.0" />
-        <param name="iterCoarse"          value="15" />
-        <param name="iterFine"            value="15" />
-        <param name="icpThresh"           value="1.5" />
-        <param name="icpOnly"             value="false" />
-        <param name="oneShot"             value="true" />
+        <param name="/priormap_dir"  type="string" value="$(arg prior_map_dir)" />
+        <rosparam file="$(find slict)/config/multi_reloc_mcdviral.yaml" command="load" />
         <remap from="/liteloam_pose"  to="/reloc_pose"/>
       </node>
 
@@ -165,7 +155,7 @@
       <!-- An offset time -->
 
       <!-- Default fallback -->
-      <arg name="start_time" value="0">
+      <arg name="start_time" value="0"/>
 
 
       <!-- Play the bag file -->

@@ -294,24 +294,24 @@ protected:
             auto w_cost = sqrt_info*residuals;
             double cost = 0.5*w_cost.transpose()*w_cost;
 
-            printf("preint %d. cost %f. buff: %d. ", id, cost, acc_buf.size());
-            printf("Dp: %6.3f, %6.3f, %6.3f. "
-                   "Dv: %6.3f, %6.3f, %6.3f. "
-                   "Dq: %6.3f, %6.3f, %6.3f, %6.3f. "
-                   "Ba: %6.3f, %6.3f, %6.3f. "
-                   "Bg: %6.3f, %6.3f, %6.3f\n",
-                    corrected_delta_p.x(), corrected_delta_p.y(), corrected_delta_p.z(),
-                    corrected_delta_v.x(), corrected_delta_v.z(), corrected_delta_v.z(),
-                    corrected_delta_q.x(), corrected_delta_q.y(), corrected_delta_q.z(), corrected_delta_q.w(),
-                    linearized_ba(0), linearized_ba(1), linearized_ba(2),
-                    linearized_bg(0), linearized_bg(1), linearized_bg(2));
+            // printf("preint %d. cost %f. buff: %d. ", id, cost, acc_buf.size());
+            // printf("Dp: %6.3f, %6.3f, %6.3f. "
+            //        "Dv: %6.3f, %6.3f, %6.3f. "
+            //        "Dq: %6.3f, %6.3f, %6.3f, %6.3f. "
+            //        "Ba: %6.3f, %6.3f, %6.3f. "
+            //        "Bg: %6.3f, %6.3f, %6.3f\n",
+            //         corrected_delta_p.x(), corrected_delta_p.y(), corrected_delta_p.z(),
+            //         corrected_delta_v.x(), corrected_delta_v.z(), corrected_delta_v.z(),
+            //         corrected_delta_q.x(), corrected_delta_q.y(), corrected_delta_q.z(), corrected_delta_q.w(),
+            //         linearized_ba(0), linearized_ba(1), linearized_ba(2),
+            //         linearized_bg(0), linearized_bg(1), linearized_bg(2));
 
-            std::cout << "Pi:" << Pi.transpose()
-                      << ", Vi: " << Vi.transpose()
-                      << ", Pj:" << Pj.transpose()
-                      << ", Vj: " << Vj.transpose() << std::endl;
-            printf("residual: \n");
-            std::cout << residuals.transpose() << std::endl << std::endl;
+            // std::cout << "Pi:" << Pi.transpose()
+            //           << ", Vi: " << Vi.transpose()
+            //           << ", Pj:" << Pj.transpose()
+            //           << ", Vj: " << Vj.transpose() << std::endl;
+            // printf("residual: \n");
+            // std::cout << residuals.transpose() << std::endl << std::endl;
 
             // std::cout << covariance << std::endl;
         }
@@ -359,7 +359,7 @@ protected:
     std::vector<Eigen::Vector3d> gyr_buf;
 
     int  id;
-    bool show_init_cost = true;
+    bool show_init_cost = false;
 
     double ACC_N;
     double ACC_W;

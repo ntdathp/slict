@@ -41,8 +41,8 @@ The software was developed on the following dependencies. Ubuntu 20.04 and ROS N
 SLICT uses UFOMap for global map management. It also supports epicyclic lidar (Livox). Thus, three packages need to be included in the catkin workspace:
 
 1. [SLICT](https://github.com/brytsknguyen/slict)
-2. [UFOMap (devel_surfel)](https://github.com/brytsknguyen/ufomap/tree/devel_surfel)
-3. [Livox ROS driver (forked)](https://github.com/brytsknguyen/livox_ros_driver)
+2. [UFOMap (devel_surfel_noetic)](https://github.com/ntdathp/ufomap/tree/devel_surfel_noetic)
+3. [Livox ROS driver (forked)](https://github.com/ntdathp/livox_ros_driver)
 
 Please install all dependencies first. Afterwards, create a ros workspace, clone the packages to the workspace, and build by `catkin build` or `catkin_make`, for e.g.:
 
@@ -50,8 +50,8 @@ Please install all dependencies first. Afterwards, create a ros workspace, clone
 mkdir -p slict_ws/src
 cd slict_ws/src
 git clone https://github.com/brytsknguyen/slict
-git clone https://github.com/brytsknguyen/ufomap && cd ufomap && git checkout devel_surfel && cd ..
-git clone https://github.com/brytsknguyen/livox_ros_driver
+git clone https://github.com/ntdathp/ufomap && cd ufomap && git checkout devel_surfel_noetic && cd ..
+git clone https://github.com/ntdathp/livox_ros_driver
 cd .. && catkin build
 ```
 The launch files for NTU VIRAL, Newer College, MCD VIRAL, and FusionPortable are provided under `launch`

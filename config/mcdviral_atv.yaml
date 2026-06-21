@@ -4,8 +4,8 @@ autoexit:           1
 # Declare the lidar topics to merge
 lidar_topic:        [
                       "/os_cloud_node/points"
-                      # ,
-                      # "/livox/lidar_ouster"
+                      ,
+                      "/livox/lidar_ouster"
                     ]
 
 merged_lidar_topic: "/merged_pc"
@@ -19,12 +19,12 @@ lidar_extr:         [
                       0.003587143302461965,   -0.999943027982117100,   0.010053516443599904,  -0.012837544242408117,
                      -0.010854387257665576,   -0.010091923381711220,  -0.999890161647627000,  -0.020492606896077407,
                       0.000000000000000000,    0.000000000000000000,   0.000000000000000000,   0.000000000000000000
-                    #   ,
-                    #   # Livox
-                    #   0.99985813160508060000, -0.0002258196228773494, -0.0168423771687589430, -0.010514839241742317,
-                    #  -0.00017111407692153792, -0.9999947058517530000,  0.0032494597148797887, -0.008989784841758377,
-                    #  -0.01684302179448474500, -0.0032461167514232880, -0.9998528768488223000,  0.037356468638334630,
-                    #   0.00000000000000000000,  0.000000000000000000,   0.0000000000000000000,  1.000000000000000000
+                      ,
+                      # Livox
+                      0.99985813160508060000, -0.0002258196228773494, -0.0168423771687589430, -0.010514839241742317,
+                     -0.00017111407692153792, -0.9999947058517530000,  0.0032494597148797887, -0.008989784841758377,
+                     -0.01684302179448474500, -0.0032461167514232880, -0.9998528768488223000,  0.037356468638334630,
+                      0.00000000000000000000,  0.000000000000000000,   0.0000000000000000000,  1.000000000000000000
                     ]
 
 # Minimum lidar range to admit
@@ -72,13 +72,13 @@ reassociate_steps:  2
 # Deskew choice, 0 for IMU prop, 1 for SPLINE, 1 for before and 1 for after
 deskew_method:      [ 0, 0 ]
 # Rate of doing reassociation
-reassoc_rate:       0
+reassoc_rate:       3
 # Use ceres
 use_ceres:          0
 
 # Downsampling grid size, chose -1 for no downsampling
 leaf_size:          0.1           # Downsample scale of input pointcloud, also the scale of ufomap leaf
-assoc_spacing:      0.4
+assoc_spacing:      0.1
 surfel_map_depth:   16
 surfel_min_point:   5
 surfel_min_depth:   1
@@ -93,7 +93,7 @@ score_min:          0.0
 
 # Downsample coefficient of lidar scans, ds_rate = n means keep every n-th point.
 ds_rate:            [
-                      8
+                      4
                       ,
                       1
                     ]
@@ -103,8 +103,8 @@ sweep_len:          1
 
 # Threshold to add new keyframe
 kf_min_dis:         5.0
-kf_min_angle:       20
-refine_kf:          0
+kf_min_angle:       5
+refine_kf:          1
 
 # Optimization parameters
 lidar_loss_thres:  -10.0
@@ -117,8 +117,8 @@ linSolver:          "snc"
 trustRegType:       "lm"
 # Linear Algebra library used: "eigen", "lapack", "cuda"
 linAlgbLib:         "eigen" 
-max_solve_time:     0.3
-max_iterations:     30
+max_solve_time:     1.0
+max_iterations:     100
 ensure_real_time:   0
 find_factor_cost:   1
 fit_spline:         0
@@ -136,7 +136,7 @@ regularize_imu:     0
 imu_init_time:      0.5
 lite_redeskew:      1
 max_outer_iters:    3
-max_lidar_factor:   2000  # Maximum number of lidar factors
+max_lidar_factor:   8000  # Maximum number of lidar factors
 dj_thres:           0.0
 dx_thres:           0.5
 
@@ -150,10 +150,10 @@ icpFitnessThres:    0.6   # Fitness threshold for ICP check
 histDis:            15    # Maximum correspondence distance for icp
 
 # Bundle adjustment params
-rib_edge:           100
+rib_edge:           20
 odom_q_noise:       0.1
 odom_p_noise:       0.1
-loop_weight:        0.05
+loop_weight:        0.1
 
 # Number of optimizations before quitting
 publish_map:        0

@@ -42,7 +42,7 @@
       <param name="/use_sim_time" value="false" />
 
       <node required="false" pkg="rosbag" type="play" name="rosbag_player"
-            args="$(arg publish_clock) $(arg bag_file) -r 1.0 -s 0"
+            args="$(arg publish_clock) $(arg bag_file) -r 0.5 -s 0"
             launch-prefix="bash -c 'sleep 1; $0 $@' "/>
 
       <!-- <node pkg="tf" type="static_transform_publisher" name="base2view" args="0 0 0 0 0 0 world local 1"/> -->
